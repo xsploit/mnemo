@@ -70,6 +70,17 @@ const modelRoleChoices = [
 
 const MODEL_PICKER_CUSTOM_VALUE = '__custom_model__';
 const MODEL_PICKER_RESET_VALUE = '__reset_default__';
+const MEMORY_PANEL_TTL_MS = 15 * 60 * 1000;
+const MEMORY_PANEL_VIEWS = ['overview', 'recall', 'diary', 'context', 'why'] as const;
+type MemoryPanelView = (typeof MEMORY_PANEL_VIEWS)[number];
+interface MemoryPanelState {
+  userId: string;
+  subjectId: string;
+  userName: string;
+  query: string;
+  createdAt: number;
+}
+const memoryPanelStates = new Map<string, MemoryPanelState>();
 
 export const commandData = [
   new SlashCommandBuilder()
@@ -96,6 +107,10 @@ export const commandData = [
     .addIntegerOption((o) =>
       o.setName('memories').setDescription('Memories to retrieve, from 1 to 20.').setMinValue(1).setMaxValue(20),
     ),
+  new SlashCommandBuilder()
+    .setName('memorypanel')
+    .setDescription(`Open ${NAME}'s navigable memory panel.`)
+    .addStringOption((o) => o.setName('query').setDescription('Topic to inspect. Defaults to you and this channel.')),
   new SlashCommandBuilder()
     .setName('recall')
     .setDescription(`Ask what ${NAME} remembers about a topic.`)
@@ -453,6 +468,25 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
           historyText,
         }),
       );
+      return;
+    }
+
+    case 'memorypanel': {
+      await i.deferReply({ ephemeral: true });
+      const query = i.options.getString('query')?.trim() || `${i.user.username} in ${channelName(i.channel)}`;
+      const panelId = createMemoryPanelId();
+      const state: MemoryPanelState = {
+        userId: i.user.id,
+        subjectId,
+        userName: i.user.username,
+        query,
+        createdAt: Date.now(),
+      };
+      memoryPanelStates.set(panelId, state);
+      await i.editReply({
+        content: await renderMemoryPanelContent('overview', state, i),
+        components: [createMemoryPanelRow(i.user.id, panelId, 'overview')],
+      });
       return;
     }
 
@@ -1397,6 +1431,12 @@ export async function handleComponentInteraction(i: StringSelectMenuInteraction 
 }
 
 async function handleStringSelectMenu(i: StringSelectMenuInteraction): Promise<void> {
+  const memoryPanel = parseMemoryPanelCustomId(i.customId);
+  if (memoryPanel) {
+    await handleMemoryPanelSelect(i, memoryPanel);
+    return;
+  }
+
   const parsed = parseModelPickerCustomId(i.customId, 'modelpick');
   if (!parsed) return;
   if (!isOwner(i.user.id)) {
@@ -1460,6 +1500,201 @@ async function handleModalSubmit(i: ModalSubmitInteraction): Promise<void> {
     content: `Runtime ${modelRoleLabel(parsed.role)} model set to \`${modelId.trim()}\` and persisted until reset.`,
     ephemeral: true,
   });
+}
+
+type MemoryPanelInteraction = ChatInputCommandInteraction | StringSelectMenuInteraction;
+
+async function handleMemoryPanelSelect(
+  i: StringSelectMenuInteraction,
+  parsed: { userId: string; panelId: string },
+): Promise<void> {
+  if (parsed.userId !== i.user.id) {
+    await i.reply({ content: 'That memory panel belongs to someone else.', ephemeral: true });
+    return;
+  }
+
+  pruneMemoryPanelStates();
+  const state = memoryPanelStates.get(parsed.panelId);
+  if (!state) {
+    await i.reply({ content: 'That memory panel expired. Run `/memorypanel` again.', ephemeral: true });
+    return;
+  }
+
+  const view = i.values.find(isMemoryPanelView) ?? 'overview';
+  await i.update({
+    content: await renderMemoryPanelContent(view, state, i),
+    components: [createMemoryPanelRow(i.user.id, parsed.panelId, view)],
+  });
+}
+
+function createMemoryPanelId(): string {
+  pruneMemoryPanelStates();
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function parseMemoryPanelCustomId(customId: string): { userId: string; panelId: string } | null {
+  const [prefix, userId, panelId] = customId.split(':');
+  if (prefix !== 'memorypanel' || !userId || !panelId) return null;
+  return { userId, panelId };
+}
+
+function pruneMemoryPanelStates(): void {
+  const cutoff = Date.now() - MEMORY_PANEL_TTL_MS;
+  for (const [panelId, state] of memoryPanelStates) {
+    if (state.createdAt < cutoff) memoryPanelStates.delete(panelId);
+  }
+}
+
+function isMemoryPanelView(value: string | undefined): value is MemoryPanelView {
+  return Boolean(value) && MEMORY_PANEL_VIEWS.includes(value as MemoryPanelView);
+}
+
+function createMemoryPanelRow(
+  userId: string,
+  panelId: string,
+  selected: MemoryPanelView,
+): ActionRowBuilder<StringSelectMenuBuilder> {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`memorypanel:${userId}:${panelId}`)
+    .setPlaceholder(`Memory view: ${selected}`)
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(memoryPanelOptions(selected));
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+}
+
+function memoryPanelOptions(selected: MemoryPanelView): Array<{ label: string; value: string; description: string; default?: boolean }> {
+  return [
+    { label: 'Overview', value: 'overview', description: 'Memory counts and top durable facts.' },
+    { label: 'Recall', value: 'recall', description: 'Retrieved memories for this panel query.' },
+    { label: 'Diary', value: 'diary', description: 'Most recent dream diary entry.' },
+    { label: 'Context', value: 'context', description: 'Memory plus recent channel history.' },
+    { label: 'Why', value: 'why', description: 'Latest answer trace for this channel.' },
+  ].map((option) => ({ ...option, default: option.value === selected }));
+}
+
+async function renderMemoryPanelContent(
+  view: MemoryPanelView,
+  state: MemoryPanelState,
+  i: MemoryPanelInteraction,
+): Promise<string> {
+  const body = await renderMemoryPanelBody(view, state, i);
+  return clampMemoryPanelText(
+    [
+      `${NAME.toUpperCase()} MEMORY PANEL`,
+      `view=${view} query=${JSON.stringify(state.query)}`,
+      `user=${state.userName} expires=${new Date(state.createdAt + MEMORY_PANEL_TTL_MS).toISOString()}`,
+      '',
+      body,
+    ].join('\n'),
+  );
+}
+
+async function renderMemoryPanelBody(
+  view: MemoryPanelView,
+  state: MemoryPanelState,
+  i: MemoryPanelInteraction,
+): Promise<string> {
+  const store = await getStore();
+  const memoryPaused = await memoryPrivacy.isOptedOut(state.subjectId);
+
+  if (view === 'overview') {
+    const stats = await store.stats(state.subjectId);
+    const facts = memoryPaused
+      ? []
+      : await store.retrieve({
+          subjectId: state.subjectId,
+          queryEmbedding: await embedOne(`who is ${state.userName}`),
+          kinds: ['semantic', 'reflection'],
+          limit: 6,
+          validOnly: true,
+        });
+    return [
+      `memoryPausedForUser=${memoryPaused ? 'yes' : 'no'}`,
+      `memory=${stats.episodic} episodic · ${stats.semantic} facts · ${stats.reflection} insights · ${stats.diary} dreams`,
+      '',
+      'Top durable memory:',
+      facts.length ? facts.map((f, index) => `${index + 1}. ${extractPersonaMessage(f.content)}`).join('\n') : '(nothing durable yet)',
+    ].join('\n');
+  }
+
+  if (memoryPaused) return memoryPausedReply();
+
+  if (view === 'recall') {
+    const memories = await store.retrieve({
+      subjectId: state.subjectId,
+      queryEmbedding: await embedOne(state.query),
+      limit: 8,
+      validOnly: true,
+    });
+    return memories.length
+      ? memories
+          .map((memory, index) =>
+            [
+              `${index + 1}. ${memory.kind} score=${memory.score.toFixed(2)} rel=${memory.parts.relevance.toFixed(2)} imp=${memory.parts.importance.toFixed(2)} rec=${memory.parts.recency.toFixed(2)}`,
+              `id=${memory.id} importance=${memory.importance}`,
+              extractPersonaMessage(memory.content),
+              memory.reasoning ? `reasoning=${memory.reasoning}` : '',
+            ]
+              .filter(Boolean)
+              .join('\n'),
+          )
+          .join('\n\n')
+      : `I don't have anything on **${state.query}** yet.`;
+  }
+
+  if (view === 'diary') {
+    const dreams = await store.recent(
+      state.subjectId,
+      ['diary'],
+      new Date(Date.now() - 1000 * 3600 * 24 * 30),
+      20,
+    );
+    const latest = dreams[dreams.length - 1];
+    return latest
+      ? [`latest=${latest.createdAt.toISOString()} id=${latest.id}`, extractPersonaMessage(latest.content), latest.reasoning ? `reasoning=${latest.reasoning}` : '']
+          .filter(Boolean)
+          .join('\n')
+      : "I haven't dreamed about you yet. Try `/dream`.";
+  }
+
+  if (view === 'context') {
+    const memories = await store.retrieve({
+      subjectId: state.subjectId,
+      queryEmbedding: await embedOne(state.query),
+      limit: 8,
+      validOnly: true,
+    });
+    let historyText = '(current channel does not expose message history)';
+    if (isMessageFetchChannel(i.channel) && canReadHistory(i, i.channel)) {
+      const fetched = await i.channel.messages.fetch({ limit: 20 });
+      const messages = [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+      historyText = messages.length ? renderMessagesForHistory(messages, i.client.user?.id ?? '') : '(no recent messages)';
+    } else if (isMessageFetchChannel(i.channel)) {
+      historyText = '(current channel is not readable by both you and Hikari)';
+    }
+    return renderContextPreview({
+      query: state.query,
+      subjectId: state.subjectId,
+      userName: state.userName,
+      channel: channelName(i.channel),
+      memoryPaused,
+      memories,
+      historyText,
+    });
+  }
+
+  const trace = await latestTurnTraceForChannel(i.channelId);
+  if (!trace) return 'No answer trace found for this channel yet.';
+  if (!isOwner(i.user.id) && trace.subjectId !== state.subjectId) {
+    return 'The latest trace in this channel belongs to someone else. Ask me something first, then use this panel again.';
+  }
+  return renderTurnTrace(trace, isOwner(i.user.id));
+}
+
+function clampMemoryPanelText(text: string): string {
+  if (text.length <= 1900) return text;
+  return `${text.slice(0, 1850)}\n\n[trimmed; use the matching command for the full view]`;
 }
 
 function createModelPickerRow(
@@ -2030,7 +2265,7 @@ function channelType(channel: unknown): number {
   return typeof type === 'number' ? type : -1;
 }
 
-function canReadHistory(i: ChatInputCommandInteraction, channel: unknown): boolean {
+function canReadHistory(i: ChatInputCommandInteraction | StringSelectMenuInteraction, channel: unknown): boolean {
   if (!isMessageFetchChannel(channel)) return false;
   const botPerms = permissionsFor(channel, i.guild?.members.me ?? i.client.user);
   const actorPerms = permissionsFor(channel, i.user.id);
