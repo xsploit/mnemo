@@ -1914,6 +1914,7 @@ function renderTurnTrace(trace: NonNullable<Awaited<ReturnType<typeof latestTurn
     `author=${trace.authorName}`,
     `kind=${trace.kind}`,
     `model=${trace.model}`,
+    trace.affect ? `affect=${formatTraceAffect(trace.affect)}` : undefined,
     `systemChars=${trace.systemChars} promptChars=${trace.promptChars}`,
     `historyTurns=${trace.history.length}`,
     `retrievedMemories=${trace.retrieved.length}`,
@@ -1927,7 +1928,21 @@ function renderTurnTrace(trace: NonNullable<Awaited<ReturnType<typeof latestTurn
     'Answer:',
     trace.answer,
     ...(includePrompt ? ['', 'Prompt:', trace.prompt] : []),
-  ].join('\n');
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join('\n');
+}
+
+function formatTraceAffect(affect: NonNullable<NonNullable<Awaited<ReturnType<typeof latestTurnTraceForChannel>>>['affect']>): string {
+  const parts = [
+    affect.mood,
+    typeof affect.valence === 'number' ? `valence=${affect.valence.toFixed(2)}` : '',
+    typeof affect.arousal === 'number' ? `arousal=${affect.arousal.toFixed(2)}` : '',
+    typeof affect.dominance === 'number' ? `dominance=${affect.dominance.toFixed(2)}` : '',
+    typeof affect.socialEnergy === 'number' ? `socialEnergy=${affect.socialEnergy.toFixed(2)}` : '',
+    typeof affect.confidence === 'number' ? `confidence=${affect.confidence.toFixed(2)}` : '',
+  ].filter(Boolean);
+  return parts.join(' ');
 }
 
 function renderMessagesForSummary(messages: Message[], selfId: string): string {

@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { ScoredMemory } from '../memory/types.js';
 import type { HistoryTurn } from './respond.js';
+import type { PersonaAffect } from '../llm/personaOutput.js';
 
 const TRACE_PATH = path.resolve('data', 'turn-traces.jsonl');
 
@@ -19,6 +20,7 @@ export interface TurnTraceInput {
   promptChars: number;
   history: HistoryTurn[];
   retrieved: ScoredMemory[];
+  affect?: PersonaAffect | null;
 }
 
 export interface TurnTraceRecord extends TurnTraceInput {

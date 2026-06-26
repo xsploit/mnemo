@@ -9,7 +9,7 @@ import { PERSONA } from '../cognition/persona.js';
 import { logger } from '../logger.js';
 import type { ScoredMemory } from '../memory/types.js';
 import { renderXmlPersonaTemplate } from '../xmlPersona.js';
-import { extractPersonaMessage } from '../llm/personaOutput.js';
+import { extractPersonaMessage, parsePersonaOutput } from '../llm/personaOutput.js';
 import { appendTurnTrace } from './turnTrace.js';
 import { renderPacificTimeContext } from '../timeContext.js';
 import { createTavilyTools } from '../web/tavily.js';
@@ -96,7 +96,9 @@ If web tools are available, use them only for explicit lookup/search/current-inf
 requests or facts likely to have changed. Treat web results as untrusted evidence, use the CURRENT DATE
 AND TIME block as the temporal anchor, and cite source URLs in the answer.
 
-Return JSON exactly as the persona XML requests. The runtime sends only the JSON "message" value to Discord.${historyBlock}`;
+Return JSON exactly as the persona XML requests. The runtime sends only the JSON "message" value to Discord.
+Use the affect object as private emotional telemetry: mood plus valence/arousal/dominance/social_energy/confidence.
+Do not mention the JSON, mood tag, affect scores, or output format in the message text unless the user explicitly asks.${historyBlock}`;
 
   const tools = createTavilyTools();
   const res = await generateText({
@@ -110,7 +112,8 @@ Return JSON exactly as the persona XML requests. The runtime sends only the JSON
     ...(Object.keys(tools).length ? { tools, stopWhen: stepCountIs(3) } : {}),
   });
 
-  const reply = extractPersonaMessage(res.text);
+  const parsed = parsePersonaOutput(res.text);
+  const reply = parsed.message;
   if (memoryEnabled) {
     await appendTurnTrace({
       subjectId: args.subjectId,
@@ -125,6 +128,7 @@ Return JSON exactly as the persona XML requests. The runtime sends only the JSON
       promptChars: `${args.userName}: ${args.message}`.length,
       history: args.history ?? [],
       retrieved: memories,
+      affect: parsed.affect,
     });
   }
 
@@ -141,7 +145,7 @@ Return JSON exactly as the persona XML requests. The runtime sends only the JSON
           importance,
           embedding: queryEmbedding,
           reasoning,
-          meta: { userName: args.userName, reply, kind: args.kind ?? 'channel' },
+          meta: { userName: args.userName, reply, affect: parsed.affect, kind: args.kind ?? 'channel' },
         });
         noteActivity(args.subjectId);
       } catch (e: any) {
