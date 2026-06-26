@@ -3,8 +3,10 @@ import { startDreamLoop } from './worker/scheduler.js';
 import { getStore } from './memory/store.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { acquireRuntimeLock } from './runtimeLock.js';
 
 const log = logger('main');
+let releaseRuntimeLock: (() => Promise<void>) | null = null;
 
 /**
  * Entry point: one process running two minds.
@@ -12,6 +14,7 @@ const log = logger('main');
  *  - the dreamer (background loop): sleeps on idle subjects and rewrites memory
  */
 async function main() {
+  releaseRuntimeLock = await acquireRuntimeLock();
   await getStore(); // initialize the memory store up front (fail fast)
   const client = await startBot();
 
@@ -25,6 +28,7 @@ async function main() {
     log.info(`${sig} received, shutting down`);
     stopDreaming();
     await client.destroy();
+    await releaseRuntimeLock?.();
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
@@ -35,5 +39,8 @@ async function main() {
 
 main().catch((e) => {
   log.error('fatal', e?.stack ?? e);
-  process.exit(1);
+  void (async () => {
+    await releaseRuntimeLock?.();
+    process.exit(1);
+  })();
 });
