@@ -1,0 +1,41 @@
+{
+  "name": "mnemo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An experimental Discord bot with a dreaming, reflective, layered memory — a mind that consolidates its experiences while it sleeps. Routes every model through the Vercel AI Gateway.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node --enable-source-maps dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "register": "tsx src/bot/register-commands.ts",
+    "dream": "tsx src/worker/run-once.ts",
+    "db:init": "tsx src/db/init.ts",
+    "smoke": "tsx src/smoke.ts",
+    "login-test": "tsx src/login-test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/gateway": "^1.0.0",
+    "ai": "^5.0.40",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.7",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.13.1",
+    "pgvector": "^0.2.0",
+    "zod": "^3.24.1"
+  },
+  "optionalDependencies": {
+    "bullmq": "^5.34.0",
+    "ioredis": "^5.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
