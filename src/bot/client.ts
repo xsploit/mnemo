@@ -55,7 +55,7 @@ export function createClient(): Client {
         await handleCommand(interaction);
         return;
       }
-      if (interaction.isStringSelectMenu() || interaction.isModalSubmit()) {
+      if (interaction.isStringSelectMenu() || interaction.isButton() || interaction.isModalSubmit()) {
         await handleComponentInteraction(interaction);
         return;
       }

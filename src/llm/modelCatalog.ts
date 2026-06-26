@@ -13,6 +13,9 @@ export interface GatewayModelInfo {
 export interface GatewayModelCatalog {
   models: GatewayModelInfo[];
   source: 'gateway' | 'fallback';
+  total: number;
+  offset: number;
+  limit: number;
   error?: string;
 }
 
@@ -32,7 +35,7 @@ export const fallbackGatewayModelIds = [
 let cached: { at: number; catalog: GatewayModelCatalog } | null = null;
 const cacheTtlMs = 10 * 60 * 1000;
 
-export async function listGatewayModels(query = '', limit = 25): Promise<GatewayModelCatalog> {
+export async function listGatewayModels(query = '', limit = 25, offset = 0): Promise<GatewayModelCatalog> {
   const catalog = await loadGatewayModelCatalog();
   const normalized = query.trim().toLowerCase();
   const models = normalized
@@ -40,12 +43,15 @@ export async function listGatewayModels(query = '', limit = 25): Promise<Gateway
         [model.id, model.name, model.ownedBy, model.type, ...model.tags].filter(Boolean).join(' ').toLowerCase().includes(normalized),
       )
     : catalog.models;
-  return { ...catalog, models: models.slice(0, Math.max(1, limit)) };
+  const safeLimit = Math.max(1, limit);
+  const safeOffset = Math.max(0, offset);
+  return { ...catalog, total: models.length, offset: safeOffset, limit: safeLimit, models: models.slice(safeOffset, safeOffset + safeLimit) };
 }
 
 export function formatGatewayModelList(catalog: GatewayModelCatalog): string {
+  const end = Math.min(catalog.total, catalog.offset + catalog.models.length);
   const lines = [
-    `models=${catalog.models.length} source=${catalog.source}${catalog.error ? ` error=${catalog.error}` : ''}`,
+    `models=${catalog.total} showing=${catalog.offset + 1}-${end} source=${catalog.source}${catalog.error ? ` error=${catalog.error}` : ''}`,
     ...catalog.models.map((model, index) => {
       const details = [
         model.name && model.name !== model.id ? model.name : '',
@@ -71,7 +77,8 @@ async function loadGatewayModelCatalog(): Promise<GatewayModelCatalog> {
     if (!response.ok) throw new Error(`${response.status} ${(await response.text()).slice(0, 160)}`);
     const parsed = (await response.json()) as { data?: unknown[] };
     const models = (parsed.data ?? []).map(parseGatewayModel).filter((model): model is GatewayModelInfo => model !== null);
-    const catalog: GatewayModelCatalog = { source: 'gateway', models: dedupeModels([...models, ...fallbackModels()]) };
+    const deduped = dedupeModels([...models, ...fallbackModels()]);
+    const catalog: GatewayModelCatalog = { source: 'gateway', models: deduped, total: deduped.length, offset: 0, limit: deduped.length };
     cached = { at: Date.now(), catalog };
     return catalog;
   } catch (error) {
@@ -79,6 +86,9 @@ async function loadGatewayModelCatalog(): Promise<GatewayModelCatalog> {
       source: 'fallback',
       error: error instanceof Error ? error.message : String(error),
       models: fallbackModels(),
+      total: fallbackGatewayModelIds.length,
+      offset: 0,
+      limit: fallbackGatewayModelIds.length,
     };
     cached = { at: Date.now(), catalog };
     return catalog;

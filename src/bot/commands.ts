@@ -1,6 +1,8 @@
 import {
   ActionRowBuilder,
   AuditLogEvent,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   SlashCommandBuilder,
   EmbedBuilder,
@@ -9,6 +11,7 @@ import {
   StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
+  type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Guild,
   type GuildMember,
@@ -70,9 +73,18 @@ const modelRoleChoices = [
 
 const MODEL_PICKER_CUSTOM_VALUE = '__custom_model__';
 const MODEL_PICKER_RESET_VALUE = '__reset_default__';
+const MODEL_PICKER_PAGE_SIZE = 23;
+const MODEL_PICKER_TTL_MS = 15 * 60 * 1000;
 const MEMORY_PANEL_TTL_MS = 15 * 60 * 1000;
 const MEMORY_PANEL_VIEWS = ['overview', 'recall', 'diary', 'context', 'why'] as const;
 type MemoryPanelView = (typeof MEMORY_PANEL_VIEWS)[number];
+interface ModelPickerState {
+  userId: string;
+  role: RuntimeModelRole;
+  query: string;
+  page: number;
+  createdAt: number;
+}
 interface MemoryPanelState {
   userId: string;
   subjectId: string;
@@ -80,6 +92,7 @@ interface MemoryPanelState {
   query: string;
   createdAt: number;
 }
+const modelPickerStates = new Map<string, ModelPickerState>();
 const memoryPanelStates = new Map<string, MemoryPanelState>();
 
 export const commandData = [
@@ -1158,10 +1171,12 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
       if (subcommand === 'pick') {
         const role = i.options.getString('role', true) as RuntimeModelRole;
         const query = i.options.getString('query') ?? '';
-        const catalog = await listGatewayModels(query, 23);
+        const pickerId = createModelPickerState(i.user.id, role, query);
+        const state = modelPickerStates.get(pickerId)!;
+        const catalog = await listModelPickerCatalog(state);
         await i.reply({
           content: renderModelPickerPrompt(role, query, catalog),
-          components: [createModelPickerRow(i.user.id, role, query, catalog)],
+          components: createModelPickerComponents(i.user.id, role, pickerId, catalog),
           ephemeral: true,
         });
         return;
@@ -1420,9 +1435,13 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
   }
 }
 
-export async function handleComponentInteraction(i: StringSelectMenuInteraction | ModalSubmitInteraction): Promise<void> {
+export async function handleComponentInteraction(i: StringSelectMenuInteraction | ButtonInteraction | ModalSubmitInteraction): Promise<void> {
   if (i.isStringSelectMenu()) {
     await handleStringSelectMenu(i);
+    return;
+  }
+  if (i.isButton()) {
+    await handleButtonInteraction(i);
     return;
   }
   if (i.isModalSubmit()) {
@@ -1448,6 +1467,12 @@ async function handleStringSelectMenu(i: StringSelectMenuInteraction): Promise<v
     return;
   }
 
+  const state = getModelPickerState(parsed.pickerId, parsed.userId, parsed.role);
+  if (!state) {
+    await i.reply({ content: 'That model picker expired. Run `/model pick` again.', ephemeral: true });
+    return;
+  }
+
   const selected = i.values[0] ?? '';
   if (selected === MODEL_PICKER_CUSTOM_VALUE) {
     await i.showModal(createCustomModelModal(i.user.id, parsed.role));
@@ -1455,10 +1480,10 @@ async function handleStringSelectMenu(i: StringSelectMenuInteraction): Promise<v
   }
   if (selected === MODEL_PICKER_RESET_VALUE) {
     resetRuntimeModel(parsed.role);
-    const catalog = await listGatewayModels('', 23);
+    const catalog = await listModelPickerCatalog(state);
     await i.update({
-      content: `Runtime ${modelRoleLabel(parsed.role)} model reset to .env default.\n\n${renderModelPickerPrompt(parsed.role, '', catalog)}`,
-      components: [createModelPickerRow(i.user.id, parsed.role, '', catalog)],
+      content: `Runtime ${modelRoleLabel(parsed.role)} model reset to .env default.\n\n${renderModelPickerPrompt(parsed.role, state.query, catalog)}`,
+      components: createModelPickerComponents(i.user.id, parsed.role, parsed.pickerId, catalog),
     });
     return;
   }
@@ -1470,10 +1495,34 @@ async function handleStringSelectMenu(i: StringSelectMenuInteraction): Promise<v
     return;
   }
 
-  const catalog = await listGatewayModels('', 23);
+  const catalog = await listModelPickerCatalog(state);
   await i.update({
-    content: `Runtime ${modelRoleLabel(parsed.role)} model set to \`${selected}\` and persisted until reset.\n\n${renderModelPickerPrompt(parsed.role, '', catalog)}`,
-    components: [createModelPickerRow(i.user.id, parsed.role, '', catalog)],
+    content: `Runtime ${modelRoleLabel(parsed.role)} model set to \`${selected}\` and persisted until reset.\n\n${renderModelPickerPrompt(parsed.role, state.query, catalog)}`,
+    components: createModelPickerComponents(i.user.id, parsed.role, parsed.pickerId, catalog),
+  });
+}
+
+async function handleButtonInteraction(i: ButtonInteraction): Promise<void> {
+  const parsed = parseModelPageCustomId(i.customId);
+  if (!parsed) return;
+  if (!isOwner(i.user.id)) {
+    await i.reply({ content: 'Only configured owners can page runtime models.', ephemeral: true });
+    return;
+  }
+  if (parsed.userId !== i.user.id) {
+    await i.reply({ content: 'That model picker belongs to someone else.', ephemeral: true });
+    return;
+  }
+  const state = modelPickerStates.get(parsed.pickerId);
+  if (!state) {
+    await i.reply({ content: 'That model picker expired. Run `/model pick` again.', ephemeral: true });
+    return;
+  }
+  state.page = Math.max(0, state.page + (parsed.direction === 'next' ? 1 : -1));
+  const catalog = await listModelPickerCatalog(state);
+  await i.update({
+    content: renderModelPickerPrompt(state.role, state.query, catalog),
+    components: createModelPickerComponents(i.user.id, state.role, parsed.pickerId, catalog),
   });
 }
 
@@ -1697,17 +1746,60 @@ function clampMemoryPanelText(text: string): string {
   return `${text.slice(0, 1850)}\n\n[trimmed; use the matching command for the full view]`;
 }
 
-function createModelPickerRow(
+function createModelPickerState(userId: string, role: RuntimeModelRole, query: string): string {
+  pruneModelPickerStates();
+  const pickerId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  modelPickerStates.set(pickerId, { userId, role, query, page: 0, createdAt: Date.now() });
+  return pickerId;
+}
+
+function getModelPickerState(pickerId: string, userId: string, role: RuntimeModelRole): ModelPickerState | null {
+  pruneModelPickerStates();
+  const state = modelPickerStates.get(pickerId);
+  if (!state || state.userId !== userId || state.role !== role) return null;
+  return state;
+}
+
+function pruneModelPickerStates(): void {
+  const cutoff = Date.now() - MODEL_PICKER_TTL_MS;
+  for (const [pickerId, state] of modelPickerStates) {
+    if (state.createdAt < cutoff) modelPickerStates.delete(pickerId);
+  }
+}
+
+async function listModelPickerCatalog(state: ModelPickerState): Promise<GatewayModelCatalog> {
+  let catalog = await listGatewayModels(state.query, MODEL_PICKER_PAGE_SIZE, state.page * MODEL_PICKER_PAGE_SIZE);
+  if (catalog.models.length === 0 && state.page > 0 && catalog.total > 0) {
+    state.page = Math.max(0, Math.ceil(catalog.total / MODEL_PICKER_PAGE_SIZE) - 1);
+    catalog = await listGatewayModels(state.query, MODEL_PICKER_PAGE_SIZE, state.page * MODEL_PICKER_PAGE_SIZE);
+  }
+  return catalog;
+}
+
+function createModelPickerComponents(
   userId: string,
   role: RuntimeModelRole,
-  query: string,
+  pickerId: string,
   catalog: GatewayModelCatalog,
-): ActionRowBuilder<StringSelectMenuBuilder> {
+): [ActionRowBuilder<StringSelectMenuBuilder>, ActionRowBuilder<ButtonBuilder>] {
+  const page = modelPickerPage(catalog);
   const menu = new StringSelectMenuBuilder()
-    .setCustomId(`modelpick:${userId}:${role}`)
-    .setPlaceholder(query ? `Set ${modelRoleLabel(role)} model matching ${truncateSelectText(query, 40)}` : `Set ${modelRoleLabel(role)} model`)
+    .setCustomId(`modelpick:${userId}:${role}:${pickerId}`)
+    .setPlaceholder(`Set ${modelRoleLabel(role)} model - page ${page.current}/${page.total}`)
     .addOptions(modelPickerOptions(role, catalog));
-  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+  const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`modelpage:${userId}:${pickerId}:prev`)
+      .setLabel('Prev')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page.current <= 1),
+    new ButtonBuilder()
+      .setCustomId(`modelpage:${userId}:${pickerId}:next`)
+      .setLabel('Next')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page.current >= page.total),
+  );
+  return [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu), buttons];
 }
 
 function createCustomModelModal(userId: string, role: RuntimeModelRole): ModalBuilder {
@@ -1730,23 +1822,15 @@ function renderModelPickerPrompt(role: RuntimeModelRole, query: string, catalog:
     `Pick a Vercel AI Gateway model for \`${modelRoleLabel(role)}\`.`,
     `current=${status?.model ?? modelIds[role]}`,
     `default=${status?.defaultModel ?? 'unknown'}`,
-    `catalog=${catalog.source} matches=${catalog.models.length}${query ? ` query=${query}` : ''}`,
+    `catalog=${catalog.source} page=${modelPickerPage(catalog).current}/${modelPickerPage(catalog).total} showing=${modelPickerShowing(catalog)} matches=${catalog.total}${query ? ` query=${query}` : ''}`,
     ...(catalog.error ? [`catalogError=${truncateSelectText(catalog.error, 120)}`] : []),
-    'Use `Custom model id...` if the model is not listed.',
+    'Use Prev/Next to page the Gateway catalog, or `Custom model id...` if the model is not listed.',
   ].join('\n');
 }
 
 function modelPickerOptions(role: RuntimeModelRole, catalog: GatewayModelCatalog): Array<{ label: string; value: string; description: string }> {
   const status = runtimeModelStatus().find((item) => item.role === role);
-  const models = uniqueModelInfos([
-    modelInfoForId(status?.model),
-    modelInfoForId(status?.defaultModel),
-    modelInfoForId(config.models.chat),
-    modelInfoForId(config.models.dream),
-    modelInfoForId(config.models.json),
-    ...catalog.models,
-  ]);
-  const options = models.slice(0, 23).map((model) => ({
+  const options = catalog.models.slice(0, MODEL_PICKER_PAGE_SIZE).map((model) => ({
     label: truncateSelectText(model.id, 100),
     value: model.id,
     description: modelOptionDescription(model, status),
@@ -1764,6 +1848,18 @@ function modelPickerOptions(role: RuntimeModelRole, catalog: GatewayModelCatalog
   return options;
 }
 
+function modelPickerPage(catalog: GatewayModelCatalog): { current: number; total: number } {
+  return {
+    current: Math.floor(catalog.offset / MODEL_PICKER_PAGE_SIZE) + 1,
+    total: Math.max(1, Math.ceil(catalog.total / MODEL_PICKER_PAGE_SIZE)),
+  };
+}
+
+function modelPickerShowing(catalog: GatewayModelCatalog): string {
+  if (catalog.total === 0) return '0-0';
+  return `${catalog.offset + 1}-${Math.min(catalog.total, catalog.offset + catalog.models.length)}`;
+}
+
 function modelOptionDescription(
   model: GatewayModelInfo,
   status: ReturnType<typeof runtimeModelStatus>[number] | undefined,
@@ -1772,10 +1868,16 @@ function modelOptionDescription(
   return truncateSelectText(tags.length > 0 ? tags.join(', ') : model.name ?? model.ownedBy ?? 'gateway model', 100);
 }
 
-function parseModelPickerCustomId(customId: string, prefix: 'modelpick' | 'modelcustom'): { userId: string; role: RuntimeModelRole } | null {
-  const [actualPrefix, userId, role] = customId.split(':');
+function parseModelPickerCustomId(customId: string, prefix: 'modelpick' | 'modelcustom'): { userId: string; role: RuntimeModelRole; pickerId: string } | null {
+  const [actualPrefix, userId, role, pickerId] = customId.split(':');
   if (actualPrefix !== prefix || !userId || !isRuntimeModelRole(role)) return null;
-  return { userId, role };
+  return { userId, role, pickerId: pickerId ?? '' };
+}
+
+function parseModelPageCustomId(customId: string): { userId: string; pickerId: string; direction: 'prev' | 'next' } | null {
+  const [prefix, userId, pickerId, direction] = customId.split(':');
+  if (prefix !== 'modelpage' || !userId || !pickerId || (direction !== 'prev' && direction !== 'next')) return null;
+  return { userId, pickerId, direction };
 }
 
 function isRuntimeModelRole(value: string | undefined): value is RuntimeModelRole {
