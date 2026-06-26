@@ -30,6 +30,7 @@ import { config } from '../config.js';
 import { getRepliesPaused, getRespondToBots, setRepliesPaused, setRespondToBots } from './botChatPolicy.js';
 import { extractPersonaMessage } from '../llm/personaOutput.js';
 import { modelIds, resetRuntimeModel, runtimeModelStatus, setRuntimeModel, summarizeDiscordHistory, type RuntimeModelRole } from '../llm/gateway.js';
+import { formatGatewayModelList, listGatewayModels, type GatewayModelCatalog, type GatewayModelInfo } from '../llm/modelCatalog.js';
 import { splitMessage } from './format.js';
 import { attachmentSummaryForHistory } from './attachments.js';
 import { latestTurnTraceForChannel } from './turnTrace.js';
@@ -69,18 +70,6 @@ const modelRoleChoices = [
 
 const MODEL_PICKER_CUSTOM_VALUE = '__custom_model__';
 const MODEL_PICKER_RESET_VALUE = '__reset_default__';
-const MODEL_PICKER_PRESETS = [
-  'deepseek/deepseek-v4-pro',
-  'deepseek/deepseek-v4-flash',
-  'deepseek/deepseek-r1',
-  'deepseek/deepseek-chat',
-  'openai/gpt-4.1',
-  'openai/gpt-4.1-mini',
-  'openai/gpt-4o',
-  'anthropic/claude-opus-4-8',
-  'anthropic/claude-sonnet-4',
-  'anthropic/claude-3.7-sonnet',
-] as const;
 
 export const commandData = [
   new SlashCommandBuilder()
@@ -280,9 +269,16 @@ export const commandData = [
     .addSubcommand((s) => s.setName('status').setDescription('Show active runtime model ids.'))
     .addSubcommand((s) =>
       s
+        .setName('list')
+        .setDescription('List Vercel AI Gateway models.')
+        .addStringOption((o) => o.setName('query').setDescription('Optional model/provider search')),
+    )
+    .addSubcommand((s) =>
+      s
         .setName('pick')
         .setDescription('Open a Vercel AI Gateway model dropdown.')
-        .addStringOption((o) => o.setName('role').setDescription('Model role').setRequired(true).addChoices(...modelRoleChoices)),
+        .addStringOption((o) => o.setName('role').setDescription('Model role').setRequired(true).addChoices(...modelRoleChoices))
+        .addStringOption((o) => o.setName('query').setDescription('Optional model/provider search')),
     )
     .addSubcommand((s) =>
       s
@@ -1119,11 +1115,19 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
         await i.reply({ content: renderRuntimeModelStatus(), ephemeral: true });
         return;
       }
+      if (subcommand === 'list') {
+        await i.deferReply({ ephemeral: true });
+        const query = i.options.getString('query') ?? '';
+        await editLongReply(i, formatGatewayModelList(await listGatewayModels(query, 40)));
+        return;
+      }
       if (subcommand === 'pick') {
         const role = i.options.getString('role', true) as RuntimeModelRole;
+        const query = i.options.getString('query') ?? '';
+        const catalog = await listGatewayModels(query, 23);
         await i.reply({
-          content: renderModelPickerPrompt(role),
-          components: [createModelPickerRow(i.user.id, role)],
+          content: renderModelPickerPrompt(role, query, catalog),
+          components: [createModelPickerRow(i.user.id, role, query, catalog)],
           ephemeral: true,
         });
         return;
@@ -1411,9 +1415,10 @@ async function handleStringSelectMenu(i: StringSelectMenuInteraction): Promise<v
   }
   if (selected === MODEL_PICKER_RESET_VALUE) {
     resetRuntimeModel(parsed.role);
+    const catalog = await listGatewayModels('', 23);
     await i.update({
-      content: `Runtime ${modelRoleLabel(parsed.role)} model reset to .env default.\n\n${renderModelPickerPrompt(parsed.role)}`,
-      components: [createModelPickerRow(i.user.id, parsed.role)],
+      content: `Runtime ${modelRoleLabel(parsed.role)} model reset to .env default.\n\n${renderModelPickerPrompt(parsed.role, '', catalog)}`,
+      components: [createModelPickerRow(i.user.id, parsed.role, '', catalog)],
     });
     return;
   }
@@ -1425,9 +1430,10 @@ async function handleStringSelectMenu(i: StringSelectMenuInteraction): Promise<v
     return;
   }
 
+  const catalog = await listGatewayModels('', 23);
   await i.update({
-    content: `Runtime ${modelRoleLabel(parsed.role)} model set to \`${selected}\` and persisted until reset.\n\n${renderModelPickerPrompt(parsed.role)}`,
-    components: [createModelPickerRow(i.user.id, parsed.role)],
+    content: `Runtime ${modelRoleLabel(parsed.role)} model set to \`${selected}\` and persisted until reset.\n\n${renderModelPickerPrompt(parsed.role, '', catalog)}`,
+    components: [createModelPickerRow(i.user.id, parsed.role, '', catalog)],
   });
 }
 
@@ -1456,11 +1462,16 @@ async function handleModalSubmit(i: ModalSubmitInteraction): Promise<void> {
   });
 }
 
-function createModelPickerRow(userId: string, role: RuntimeModelRole): ActionRowBuilder<StringSelectMenuBuilder> {
+function createModelPickerRow(
+  userId: string,
+  role: RuntimeModelRole,
+  query: string,
+  catalog: GatewayModelCatalog,
+): ActionRowBuilder<StringSelectMenuBuilder> {
   const menu = new StringSelectMenuBuilder()
     .setCustomId(`modelpick:${userId}:${role}`)
-    .setPlaceholder(`Set ${modelRoleLabel(role)} model`)
-    .addOptions(modelPickerOptions(role));
+    .setPlaceholder(query ? `Set ${modelRoleLabel(role)} model matching ${truncateSelectText(query, 40)}` : `Set ${modelRoleLabel(role)} model`)
+    .addOptions(modelPickerOptions(role, catalog));
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
 }
 
@@ -1478,30 +1489,32 @@ function createCustomModelModal(userId: string, role: RuntimeModelRole): ModalBu
     .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
 }
 
-function renderModelPickerPrompt(role: RuntimeModelRole): string {
+function renderModelPickerPrompt(role: RuntimeModelRole, query: string, catalog: GatewayModelCatalog): string {
   const status = runtimeModelStatus().find((item) => item.role === role);
   return [
     `Pick a Vercel AI Gateway model for \`${modelRoleLabel(role)}\`.`,
     `current=${status?.model ?? modelIds[role]}`,
     `default=${status?.defaultModel ?? 'unknown'}`,
+    `catalog=${catalog.source} matches=${catalog.models.length}${query ? ` query=${query}` : ''}`,
+    ...(catalog.error ? [`catalogError=${truncateSelectText(catalog.error, 120)}`] : []),
     'Use `Custom model id...` if the model is not listed.',
   ].join('\n');
 }
 
-function modelPickerOptions(role: RuntimeModelRole): Array<{ label: string; value: string; description: string }> {
+function modelPickerOptions(role: RuntimeModelRole, catalog: GatewayModelCatalog): Array<{ label: string; value: string; description: string }> {
   const status = runtimeModelStatus().find((item) => item.role === role);
-  const ids = uniqueModelIds([
-    status?.model,
-    status?.defaultModel,
-    config.models.chat,
-    config.models.dream,
-    config.models.json,
-    ...MODEL_PICKER_PRESETS,
+  const models = uniqueModelInfos([
+    modelInfoForId(status?.model),
+    modelInfoForId(status?.defaultModel),
+    modelInfoForId(config.models.chat),
+    modelInfoForId(config.models.dream),
+    modelInfoForId(config.models.json),
+    ...catalog.models,
   ]);
-  const options = ids.slice(0, 23).map((modelId) => ({
-    label: truncateSelectText(modelId, 100),
-    value: modelId,
-    description: modelOptionDescription(modelId, status),
+  const options = models.slice(0, 23).map((model) => ({
+    label: truncateSelectText(model.id, 100),
+    value: model.id,
+    description: modelOptionDescription(model, status),
   }));
   options.push({
     label: 'Custom model id...',
@@ -1517,11 +1530,11 @@ function modelPickerOptions(role: RuntimeModelRole): Array<{ label: string; valu
 }
 
 function modelOptionDescription(
-  modelId: string,
+  model: GatewayModelInfo,
   status: ReturnType<typeof runtimeModelStatus>[number] | undefined,
 ): string {
-  const tags = [status?.model === modelId ? 'current' : '', status?.defaultModel === modelId ? 'default' : ''].filter(Boolean);
-  return tags.length > 0 ? tags.join(', ') : 'preset';
+  const tags = [status?.model === model.id ? 'current' : '', status?.defaultModel === model.id ? 'default' : '', model.type, model.tags[0]].filter(Boolean);
+  return truncateSelectText(tags.length > 0 ? tags.join(', ') : model.name ?? model.ownedBy ?? 'gateway model', 100);
 }
 
 function parseModelPickerCustomId(customId: string, prefix: 'modelpick' | 'modelcustom'): { userId: string; role: RuntimeModelRole } | null {
@@ -1538,8 +1551,18 @@ function modelRoleLabel(role: RuntimeModelRole): string {
   return role === 'chat' ? 'main' : role;
 }
 
-function uniqueModelIds(values: Array<string | undefined>): string[] {
-  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value && !/\s/.test(value) && value.length <= 100)))];
+function modelInfoForId(id: string | undefined): GatewayModelInfo | undefined {
+  const normalized = id?.trim();
+  return normalized && !/\s/.test(normalized) && normalized.length <= 100 ? { id: normalized, ownedBy: normalized.split('/')[0], tags: [] } : undefined;
+}
+
+function uniqueModelInfos(values: Array<GatewayModelInfo | undefined>): GatewayModelInfo[] {
+  const seen = new Set<string>();
+  return values.filter((value): value is GatewayModelInfo => {
+    if (!value?.id || seen.has(value.id) || /\s/.test(value.id) || value.id.length > 100) return false;
+    seen.add(value.id);
+    return true;
+  });
 }
 
 function truncateSelectText(value: string, maxChars: number): string {

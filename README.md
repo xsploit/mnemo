@@ -113,7 +113,7 @@ npm run dev                 # starts the bot + the dream loop
 ```
 
 - **DM the bot**, or **@mention** it / **reply** to it in a server channel, to chat.
-- Slash commands: `/whoami`, `/remember content:<text>`, `/context query:<text>`, `/recall about:<topic>`, `/diary`, `/dream` (sleep now), `/worker`, `/importmem`, `/forget`, `/channels`, `/roles`, `/server`, `/botinfo`, `/permissions`, `/cando`, `/auditperms`, `/overwrites`, `/auditlog`, `/members`, `/history`, `/fetchmsg`, `/threads`, `/assets`, `/voice`, `/invites`, `/summary`, `/status`, `/why`, `/botchat`, `/botping`, `/shitlist`, `/pause`, `/resume`, `/model status|pick|set|reset`, `/web search|extract|crawl|map|research|research_status`, `/codex`.
+- Slash commands: `/whoami`, `/remember content:<text>`, `/context query:<text>`, `/recall about:<topic>`, `/diary`, `/dream` (sleep now), `/worker`, `/importmem`, `/forget`, `/channels`, `/roles`, `/server`, `/botinfo`, `/permissions`, `/cando`, `/auditperms`, `/overwrites`, `/auditlog`, `/members`, `/history`, `/fetchmsg`, `/threads`, `/assets`, `/voice`, `/invites`, `/summary`, `/status`, `/why`, `/botchat`, `/botping`, `/shitlist`, `/pause`, `/resume`, `/model status|list|pick|set|reset`, `/web search|extract|crawl|map|research|research_status`, `/codex`.
 - Force a sleep cycle from the CLI: `npm run dream -- <your-discord-user-id>`.
 
 ### Discord setup
