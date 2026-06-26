@@ -24,7 +24,7 @@ Current practical surface:
 - `/summary` summarizes recent channel messages through live Discord history.
 - `/remember content:<text>` writes an explicit semantic memory, with the V2 memory-poisoning guard for behavior/policy instructions.
 - `/context query:<text>` is owner-only and previews retrieved memory plus current channel history before asking the model.
-- When `TAVILY_API_KEY` is configured, replies can use read-only `web_search` and `web_extract` tools for explicit lookup/current-info requests. Tool results include current Pacific time and should be treated as untrusted evidence with source URLs.
+- When `TAVILY_API_KEY` is configured, replies can use read-only Tavily web tools (`web_search`, `web_extract`, `web_crawl`, `web_map`, `web_research`, `web_research_status`) for explicit lookup/current-info/research requests. Tool results include current BC PDT time and should be treated as untrusted evidence with source URLs.
 - `/worker user:<user> lookback_hours:<hours>` is owner-only and forces one manual sleep-worker cycle for a selected user.
 - `/importmem file:<json> user:<optional>` is owner-only and imports a Hikari memory export JSON from `data/imports` or `data/exports`, skipping duplicate kind/content records.
 - `/status` shows model/runtime/memory counts.
@@ -113,7 +113,7 @@ npm run dev                 # starts the bot + the dream loop
 ```
 
 - **DM the bot**, or **@mention** it / **reply** to it in a server channel, to chat.
-- Slash commands: `/whoami`, `/remember content:<text>`, `/context query:<text>`, `/recall about:<topic>`, `/diary`, `/dream` (sleep now), `/worker`, `/importmem`, `/forget`, `/channels`, `/roles`, `/server`, `/botinfo`, `/permissions`, `/cando`, `/auditperms`, `/overwrites`, `/auditlog`, `/members`, `/history`, `/fetchmsg`, `/threads`, `/assets`, `/voice`, `/invites`, `/summary`, `/status`, `/why`, `/botchat`, `/botping`, `/shitlist`, `/pause`, `/resume`, `/model status|pick|set|reset`, `/web search|extract`, `/codex`.
+- Slash commands: `/whoami`, `/remember content:<text>`, `/context query:<text>`, `/recall about:<topic>`, `/diary`, `/dream` (sleep now), `/worker`, `/importmem`, `/forget`, `/channels`, `/roles`, `/server`, `/botinfo`, `/permissions`, `/cando`, `/auditperms`, `/overwrites`, `/auditlog`, `/members`, `/history`, `/fetchmsg`, `/threads`, `/assets`, `/voice`, `/invites`, `/summary`, `/status`, `/why`, `/botchat`, `/botping`, `/shitlist`, `/pause`, `/resume`, `/model status|pick|set|reset`, `/web search|extract|crawl|map|research|research_status`, `/codex`.
 - Force a sleep cycle from the CLI: `npm run dream -- <your-discord-user-id>`.
 
 ### Discord setup

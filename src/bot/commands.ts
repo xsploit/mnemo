@@ -34,7 +34,20 @@ import { splitMessage } from './format.js';
 import { attachmentSummaryForHistory } from './attachments.js';
 import { latestTurnTraceForChannel } from './turnTrace.js';
 import { renderPacificTimeContext } from '../timeContext.js';
-import { formatTavilyExtractResult, formatTavilySearchResult, tavilyExtract, tavilySearch, tavilyToolsAvailable } from '../web/tavily.js';
+import {
+  formatTavilyCrawlResult,
+  formatTavilyExtractResult,
+  formatTavilyMapResult,
+  formatTavilyResearchResult,
+  formatTavilySearchResult,
+  tavilyCrawl,
+  tavilyExtract,
+  tavilyMap,
+  tavilyResearch,
+  tavilyResearchStatus,
+  tavilySearch,
+  tavilyToolsAvailable,
+} from '../web/tavily.js';
 import {
   clearPendingCodexBridgeRequests,
   codexBridgeFeatures,
@@ -313,6 +326,37 @@ export const commandData = [
         .setName('extract')
         .setDescription('Extract readable text from a URL.')
         .addStringOption((o) => o.setName('url').setDescription('URL to extract').setRequired(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('crawl')
+        .setDescription('Crawl a site from a root URL and extract page text.')
+        .addStringOption((o) => o.setName('url').setDescription('Root URL to crawl').setRequired(true))
+        .addIntegerOption((o) => o.setName('limit').setDescription('Pages to return.').setMinValue(1).setMaxValue(50))
+        .addIntegerOption((o) => o.setName('max_depth').setDescription('Crawl depth, 1 to 3.').setMinValue(1).setMaxValue(3))
+        .addStringOption((o) => o.setName('instructions').setDescription('Optional crawl instructions')),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('map')
+        .setDescription('Discover URLs under a site without extracting full pages.')
+        .addStringOption((o) => o.setName('url').setDescription('Root URL to map').setRequired(true))
+        .addIntegerOption((o) => o.setName('limit').setDescription('URLs to return.').setMinValue(1).setMaxValue(100))
+        .addIntegerOption((o) => o.setName('max_depth').setDescription('Map depth, 1 to 3.').setMinValue(1).setMaxValue(3))
+        .addStringOption((o) => o.setName('instructions').setDescription('Optional mapping instructions')),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('research')
+        .setDescription('Create a Tavily deep research task.')
+        .addStringOption((o) => o.setName('input').setDescription('Research prompt').setRequired(true))
+        .addStringOption((o) => o.setName('model').setDescription('Tavily research model. Defaults to auto.')),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('research_status')
+        .setDescription('Check a Tavily research task by request id.')
+        .addStringOption((o) => o.setName('request_id').setDescription('Tavily research request id').setRequired(true)),
     ),
   new SlashCommandBuilder()
     .setName('codex')
@@ -1137,6 +1181,39 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
         }
         if (subcommand === 'extract') {
           await editLongReply(i, formatTavilyExtractResult(await tavilyExtract({ urls: [i.options.getString('url', true)] })));
+          return;
+        }
+        if (subcommand === 'crawl') {
+          const input: Parameters<typeof tavilyCrawl>[0] = { url: i.options.getString('url', true) };
+          const limit = i.options.getInteger('limit');
+          const maxDepth = i.options.getInteger('max_depth');
+          const instructions = i.options.getString('instructions');
+          if (limit != null) input.limit = limit;
+          if (maxDepth != null) input.max_depth = maxDepth;
+          if (instructions) input.instructions = instructions;
+          await editLongReply(i, formatTavilyCrawlResult(await tavilyCrawl(input)));
+          return;
+        }
+        if (subcommand === 'map') {
+          const input: Parameters<typeof tavilyMap>[0] = { url: i.options.getString('url', true) };
+          const limit = i.options.getInteger('limit');
+          const maxDepth = i.options.getInteger('max_depth');
+          const instructions = i.options.getString('instructions');
+          if (limit != null) input.limit = limit;
+          if (maxDepth != null) input.max_depth = maxDepth;
+          if (instructions) input.instructions = instructions;
+          await editLongReply(i, formatTavilyMapResult(await tavilyMap(input)));
+          return;
+        }
+        if (subcommand === 'research') {
+          const input: Parameters<typeof tavilyResearch>[0] = { input: i.options.getString('input', true) };
+          const model = i.options.getString('model');
+          if (model) input.model = model;
+          await editLongReply(i, formatTavilyResearchResult(await tavilyResearch(input)));
+          return;
+        }
+        if (subcommand === 'research_status') {
+          await editLongReply(i, formatTavilyResearchResult(await tavilyResearchStatus({ request_id: i.options.getString('request_id', true) })));
           return;
         }
       } catch (error) {

@@ -79,6 +79,9 @@ export const config = {
     tavilyToolTimeoutSeconds: Math.max(1, num('TAVILY_TOOL_TIMEOUT', 30)),
     tavilyToolMaxResults: Math.max(1, Math.min(10, num('TAVILY_TOOL_MAX_RESULTS', 5))),
     tavilyToolMaxUrls: Math.max(1, Math.min(5, num('TAVILY_TOOL_MAX_URLS', 5))),
+    tavilyToolCrawlLimit: Math.max(1, Math.min(50, num('TAVILY_TOOL_CRAWL_LIMIT', 25))),
+    tavilyToolMapLimit: Math.max(1, Math.min(100, num('TAVILY_TOOL_MAP_LIMIT', 75))),
+    tavilyToolResearchTimeoutSeconds: Math.max(1, num('TAVILY_TOOL_RESEARCH_TIMEOUT', 60)),
   },
   codex: {
     enabled: bool('DISCORD_CODEX_BRIDGE_ENABLED', bool('DISCORD_BRAIN_CODEX_BRIDGE_ENABLED', false)),
