@@ -18,6 +18,9 @@ import {
   readDiscordTextAttachmentContext,
 } from './attachments.js';
 import { formatShitlistReply, shitlistStore } from './shitlist.js';
+import { applyMoodPresence } from '../cognition/mood.js';
+import { ttsPolicy } from './ttsPolicy.js';
+import { buildDiscordVoiceClip, fishTtsConfigured, sendDiscordVoiceMessage } from '../voice/fishTts.js';
 
 const log = logger('bot');
 
@@ -160,10 +163,27 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
       history,
       kind: batch.kind,
     });
+    if (config.bot.moodPresence) applyMoodPresence(client);
     const chunks = splitMessage(reply);
     for (let i = 0; i < chunks.length; i++) {
       if (i === 0) await msg.reply(chunks[i]!);
       else if ('send' in msg.channel) await msg.channel.send(chunks[i]!);
+    }
+
+    // Voice clip: text first, then her voice, when TTS is on for this channel.
+    const ttsOn = fishTtsConfigured() && (await ttsPolicy.isEnabled(msg.channelId));
+    log.debug(`tts gate: configured=${fishTtsConfigured()} channelOn=${await ttsPolicy.isEnabled(msg.channelId)}`);
+    if (ttsOn && 'send' in msg.channel) {
+      const clip = await buildDiscordVoiceClip(reply, 'hikari');
+      if (clip) {
+        const sentId = await sendDiscordVoiceMessage(msg.channelId, clip).catch((e: any) => {
+          log.warn('voice message send failed', e?.message ?? e);
+          return null;
+        });
+        log.info(`voice message: ${clip.ogg.length} bytes duration=${clip.durationSecs}s message=${sentId ?? 'failed'} → #${msg.channelId}`);
+      } else {
+        log.warn('voice clip synth returned null (check FISH_* config / API)');
+      }
     }
   } catch (e: any) {
     log.error('message handling failed', e?.message);

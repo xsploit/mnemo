@@ -4,6 +4,8 @@ import { consolidate } from '../cognition/consolidate.js';
 import { reflect } from '../cognition/reflect.js';
 import { dream } from '../cognition/dream.js';
 import { forget } from '../cognition/forget.js';
+import { evolveSelf } from '../cognition/selfReflect.js';
+import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { MemoryRecord } from '../memory/types.js';
 
@@ -18,6 +20,8 @@ export interface DreamReport {
   insights: number;
   diaryEntry: string | null;
   pruned: number;
+  /** What changed in her own evolving self this cycle (baseline drift, self-notes). */
+  selfEvolution: string[];
 }
 
 /**
@@ -48,6 +52,7 @@ export async function runSleepCycle(subjectId: string, opts: { lookbackHours?: n
     insights: 0,
     diaryEntry: null,
     pruned: 0,
+    selfEvolution: [],
   };
 
   if (observations.length === 0) return report;
@@ -77,6 +82,20 @@ export async function runSleepCycle(subjectId: string, opts: { lookbackHours?: n
     .slice(0, 12);
   const diary = await dream(store, subjectId, highlights.length ? highlights : observations.slice(0, 8));
   report.diaryEntry = diary?.content ?? null;
+
+  // 4b. EVOLVE SELF — she dreams about herself too: drift her resting mood and
+  // edit her self-concept from what she just lived. Best-effort; never breaks the cycle.
+  if (config.bot.selfEvolution) {
+    try {
+      report.selfEvolution = await evolveSelf({
+        diaryText: report.diaryEntry,
+        reflections: reflection.created,
+        observations,
+      });
+    } catch (e: any) {
+      log.warn(`self-evolution failed for ${subjectId}`, e?.message);
+    }
+  }
 
   // 5. FORGET
   report.pruned = await forget(store, subjectId);

@@ -6,6 +6,11 @@ import { getStore } from '../memory/store.js';
 import { memoryPrivacy } from '../memory/privacy.js';
 import { noteActivity } from '../worker/activity.js';
 import { PERSONA } from '../cognition/persona.js';
+import { affinityStore } from '../cognition/affinity.js';
+import { recordMood, getMomentum, momentumLine } from '../cognition/mood.js';
+import { selfModelStore, renderSelfBlock } from '../cognition/selfModel.js';
+import { innerDeliberation } from '../cognition/innerVoice.js';
+import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { ScoredMemory } from '../memory/types.js';
 import { renderXmlPersonaTemplate } from '../xmlPersona.js';
@@ -70,20 +75,46 @@ export async function respond(args: {
           .join('\n')}`
       : '';
 
+  // How she feels about this user, accumulated over past turns, plus the mood she
+  // is carrying in from her last reply (emotional momentum).
+  const affinity = memoryEnabled ? await affinityStore.get(args.subjectId) : null;
+  const momentum = config.bot.moodMomentum ? getMomentum(args.subjectId) : null;
+
   const persona = renderXmlPersonaTemplate(PERSONA.persona, {
     bot_name: PERSONA.name,
     username: args.userName,
     user_name: args.userName,
     user_input: args.message,
-    social_relationship_level: memories.length ? 'friendly' : 'acquaintance',
-    social_level: memories.length ? 'friendly' : 'acquaintance',
-    trust_percent: memories.length ? '64' : '42',
+    social_relationship_level: affinity?.level ?? 'acquaintance',
+    social_level: affinity?.level ?? 'acquaintance',
+    trust_percent: String(affinity?.trustPercent ?? 42),
+    oxytocin_percent: String(affinity?.warmthPercent ?? 50),
   });
 
-  const system = `${persona}
+  const momentumBlock = momentumLine(momentum);
+
+  // Her evolving self (drifts while she dreams) + a private inner-voice pass that
+  // reacts before she speaks. The inner take is never shown — it's subtext.
+  const selfModel = config.bot.selfEvolution ? await selfModelStore.get() : null;
+  const selfBlock = selfModel ? renderSelfBlock(selfModel) : '';
+  const memoriesText = renderMemories(memories);
+  const innerTake = config.bot.innerVoice
+    ? await innerDeliberation({
+        userName: args.userName,
+        message: args.message,
+        memoriesText,
+        relationship: affinity?.level ?? 'acquaintance',
+        currentMood: momentum?.mood,
+      })
+    : '';
+  const innerBlock = innerTake
+    ? `\nYour private inner voice already reacted (NEVER quote or mention this — let it shape your subtext, tone, and what you choose to say):\n"${innerTake}"`
+    : '';
+
+  const system = `${persona}${selfBlock ? `\n\n${selfBlock}` : ''}
 
 What you remember about ${args.userName}:
-${renderMemories(memories)}
+${memoriesText}
 
 ${renderPacificTimeContext()}
 
@@ -98,7 +129,8 @@ AND TIME block as the temporal anchor, and cite source URLs in the answer.
 
 Return JSON exactly as the persona XML requests. The runtime sends only the JSON "message" value to Discord.
 Use the affect object as private emotional telemetry: mood plus valence/arousal/dominance/social_energy/confidence.
-Do not mention the JSON, mood tag, affect scores, or output format in the message text unless the user explicitly asks.${historyBlock}`;
+Do not mention the JSON, mood tag, affect scores, or output format in the message text unless the user explicitly asks.
+Your relationship with ${args.userName} right now reads as "${affinity?.level ?? 'acquaintance'}" (trust ${affinity?.trustPercent ?? 42}%). Let that color how warm, teasing, or guarded you are — earn closeness, don't fake it.${momentumBlock ? `\n${momentumBlock}` : ''}${innerBlock}${historyBlock}`;
 
   const tools = createTavilyTools();
   const res = await generateText({
@@ -114,6 +146,15 @@ Do not mention the JSON, mood tag, affect scores, or output format in the messag
 
   const parsed = parsePersonaOutput(res.text);
   const reply = parsed.message;
+
+  // Mood momentum (in-RAM, drives presence) + persistent per-user affinity.
+  recordMood(args.subjectId, parsed.affect);
+  if (memoryEnabled) {
+    void affinityStore.update(args.subjectId, args.userName, parsed.affect).catch((e: any) => {
+      log.warn('failed to update affinity', e?.message);
+    });
+  }
+
   if (memoryEnabled) {
     await appendTurnTrace({
       subjectId: args.subjectId,

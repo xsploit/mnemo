@@ -31,6 +31,8 @@ import { clearDirty } from '../worker/activity.js';
 import { forget } from '../cognition/forget.js';
 import { config } from '../config.js';
 import { getRepliesPaused, getRespondToBots, setRepliesPaused, setRespondToBots } from './botChatPolicy.js';
+import { ttsPolicy } from './ttsPolicy.js';
+import { fishTtsConfigured } from '../voice/fishTts.js';
 import { extractPersonaMessage } from '../llm/personaOutput.js';
 import { modelIds, resetRuntimeModel, runtimeModelStatus, setRuntimeModel, summarizeDiscordHistory, type RuntimeModelRole } from '../llm/gateway.js';
 import { formatGatewayModelList, listGatewayModels, type GatewayModelCatalog, type GatewayModelInfo } from '../llm/modelCatalog.js';
@@ -291,6 +293,12 @@ export const commandData = [
   new SlashCommandBuilder()
     .setName('resume')
     .setDescription('Owner-only: resume normal chat replies.'),
+  new SlashCommandBuilder()
+    .setName('tts')
+    .setDescription('Owner-only: turn voice clips on or off for this channel.')
+    .addBooleanOption((o) =>
+      o.setName('enabled').setDescription('Attach a voice clip with replies here. Omit to show status.'),
+    ),
   new SlashCommandBuilder()
     .setName('model')
     .setDescription('Owner-only: inspect or persistently switch runtime models.')
@@ -1289,6 +1297,30 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
         content: `Bot-authored replies are ${getRespondToBots() ? 'enabled' : 'disabled'}; startup default is ${
           config.bot.respondToBots ? 'enabled' : 'disabled'
         }.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    case 'tts': {
+      if (!isOwner(i.user.id)) {
+        await i.reply({ content: 'Only configured owners can change voice settings.', ephemeral: true });
+        return;
+      }
+      if (!fishTtsConfigured()) {
+        await i.reply({
+          content: 'Fish Audio TTS is not configured. Set `FISH_API_KEY` and `FISH_VOICE_ID` in `.env`.',
+          ephemeral: true,
+        });
+        return;
+      }
+      const enabled = i.options.getBoolean('enabled');
+      if (enabled != null) await ttsPolicy.set(i.channelId, enabled);
+      const now = await ttsPolicy.isEnabled(i.channelId);
+      await i.reply({
+        content: `Voice clips are ${now ? 'on 🔊' : 'off 🔇'} in this channel (global default ${
+          config.fish.enabledByDefault ? 'on' : 'off'
+        }).`,
         ephemeral: true,
       });
       return;

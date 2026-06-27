@@ -69,6 +69,14 @@ export const config = {
     pdfAttachmentMaxPages: num('DISCORD_PDF_ATTACHMENT_MAX_PAGES', 16),
     /** Replying to bot-authored messages is intentionally opt-in because loops get loud fast. */
     respondToBots: bool('DISCORD_RESPOND_TO_BOTS', false),
+    /** Carry the last turn's affect into the next reply so mood has inertia. */
+    moodMomentum: bool('MOOD_MOMENTUM', true),
+    /** Reflect current mood in the bot's Discord custom status. */
+    moodPresence: bool('MOOD_PRESENCE', true),
+    /** Hidden inner-voice deliberation pass before each public reply (one extra fast call). */
+    innerVoice: bool('INNER_VOICE', true),
+    /** Let the sleep worker drift her own affect baseline + self-concept over time. */
+    selfEvolution: bool('SELF_EVOLUTION', true),
     ownerUserIds: [...new Set([...csv('DISCORD_OWNER_USER_IDS'), ...defaultOwnerUserIds])],
   },
   web: {
@@ -98,6 +106,26 @@ export const config = {
     apiKey: req('AI_GATEWAY_API_KEY'),
     baseURL: opt('AI_GATEWAY_BASE_URL') || undefined,
     sort: (opt('GATEWAY_SORT', 'throughput') as 'cost' | 'latency' | 'throughput'),
+  },
+  fish: {
+    // Fish Audio TTS — replies can come with a native Discord voice message.
+    apiKey: opt('FISH_API_KEY'),
+    voiceId: opt('FISH_VOICE_ID'),
+    // Empty = use the account's default backbone (their plan's S2.1). Never default to s1.
+    model: opt('FISH_MODEL'),
+    baseUrl: opt('FISH_BASE_URL', 'https://api.fish.audio'),
+    format: opt('FISH_FORMAT', 'mp3'),
+    delivery: opt('TTS_DELIVERY', 'voice_message'),
+    /** Default voice-clip behavior when a channel has no explicit /tts override. */
+    enabledByDefault: bool('TTS_ENABLED', false),
+    /** Cap synthesized text (Fish bills per UTF-8 byte). */
+    maxChars: num('TTS_MAX_CHARS', 800),
+    timeoutMs: Math.max(1000, num('TTS_TIMEOUT_MS', 20000)),
+    outputRoot: path.resolve(opt('TTS_OUTPUT_ROOT', path.join('data', 'tts'))),
+    ffmpegBin: opt('TTS_FFMPEG_BIN', opt('FFMPEG_EXE', 'ffmpeg')),
+    voiceTargetPeak: num('TTS_VOICE_TARGET_PEAK', 0.82),
+    voiceOpusBitrate: opt('TTS_VOICE_OPUS_BITRATE', '32k'),
+    voiceUploadTimeoutMs: Math.max(1000, num('TTS_VOICE_UPLOAD_TIMEOUT_MS', 30000)),
   },
   models: {
     // Primary names match the user's .env; legacy MODEL_* names kept as fallbacks.
