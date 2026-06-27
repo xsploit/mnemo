@@ -18,6 +18,7 @@ import { extractPersonaMessage, parsePersonaOutput } from '../llm/personaOutput.
 import { appendTurnTrace } from './turnTrace.js';
 import { renderPacificTimeContext } from '../timeContext.js';
 import { createTavilyTools } from '../web/tavily.js';
+import { stripFishSpeechTags } from '../voice/fishSpeechTags.js';
 
 const log = logger('respond');
 
@@ -38,6 +39,11 @@ export interface HistoryTurn {
   content: string;
 }
 
+export interface RespondResult {
+  message: string;
+  affect: ReturnType<typeof parsePersonaOutput>['affect'];
+}
+
 /**
  * The conversational path. Pulls long-term memory for the speaker + recent
  * channel history, answers in the configured persona's voice, then records the
@@ -52,7 +58,7 @@ export async function respond(args: {
   message: string;
   history?: HistoryTurn[];
   kind?: 'dm' | 'mention' | 'reply' | 'channel';
-}): Promise<string> {
+}): Promise<RespondResult> {
   const memoryEnabled = !(await memoryPrivacy.isOptedOut(args.subjectId));
   const store = memoryEnabled ? await getStore() : null;
   const queryText = clampForCognition(args.message, 8000);
@@ -145,7 +151,7 @@ Your relationship with ${args.userName} right now reads as "${affinity?.level ??
   });
 
   const parsed = parsePersonaOutput(res.text);
-  const reply = parsed.message;
+  const reply = stripFishSpeechTags(parsed.message);
 
   // Mood momentum (in-RAM, drives presence) + persistent per-user affinity.
   recordMood(args.subjectId, parsed.affect);
@@ -195,7 +201,7 @@ Your relationship with ${args.userName} right now reads as "${affinity?.level ??
     })();
   }
 
-  return reply;
+  return { message: reply, affect: parsed.affect };
 }
 
 function clampForCognition(text: string, maxChars: number): string {

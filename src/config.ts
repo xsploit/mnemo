@@ -126,6 +126,7 @@ export const config = {
     voiceTargetPeak: num('TTS_VOICE_TARGET_PEAK', 0.82),
     voiceOpusBitrate: opt('TTS_VOICE_OPUS_BITRATE', '32k'),
     voiceUploadTimeoutMs: Math.max(1000, num('TTS_VOICE_UPLOAD_TIMEOUT_MS', 30000)),
+    fishTagsEnabled: bool('TTS_FISH_TAGS_ENABLED', true),
   },
   models: {
     // Primary names match the user's .env; legacy MODEL_* names kept as fallbacks.

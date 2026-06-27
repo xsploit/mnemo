@@ -21,6 +21,7 @@ import { formatShitlistReply, shitlistStore } from './shitlist.js';
 import { applyMoodPresence } from '../cognition/mood.js';
 import { ttsPolicy } from './ttsPolicy.js';
 import { buildDiscordVoiceClip, fishTtsConfigured, sendDiscordVoiceMessage } from '../voice/fishTts.js';
+import { buildTaggedFishSpeechText } from '../voice/fishSpeechTags.js';
 
 const log = logger('bot');
 
@@ -154,7 +155,8 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
   try {
     if ('sendTyping' in msg.channel) await msg.channel.sendTyping();
     const history = await fetchHistory(msg.channel, config.bot.historyN, msg.id);
-    const reply = await respond({
+    const ttsOn = fishTtsConfigured() && (await ttsPolicy.isEnabled(msg.channelId));
+    const response = await respond({
       subjectId: msg.author.id,
       channelId: msg.channelId,
       messageId: msg.id,
@@ -163,6 +165,7 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
       history,
       kind: batch.kind,
     });
+    const reply = response.message;
     if (config.bot.moodPresence) applyMoodPresence(client);
     const chunks = splitMessage(reply);
     for (let i = 0; i < chunks.length; i++) {
@@ -171,10 +174,14 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
     }
 
     // Voice clip: text first, then her voice, when TTS is on for this channel.
-    const ttsOn = fishTtsConfigured() && (await ttsPolicy.isEnabled(msg.channelId));
-    log.debug(`tts gate: configured=${fishTtsConfigured()} channelOn=${await ttsPolicy.isEnabled(msg.channelId)}`);
+    log.debug(`tts gate: configured=${fishTtsConfigured()} channelOn=${ttsOn}`);
     if (ttsOn && 'send' in msg.channel) {
-      const clip = await buildDiscordVoiceClip(reply, 'hikari');
+      const voiceText = await buildTaggedFishSpeechText({
+        displayText: reply,
+        affect: response.affect,
+        userName: msg.author.displayName ?? msg.author.username,
+      });
+      const clip = await buildDiscordVoiceClip(voiceText, 'hikari');
       if (clip) {
         const sentId = await sendDiscordVoiceMessage(msg.channelId, clip).catch((e: any) => {
           log.warn('voice message send failed', e?.message ?? e);
