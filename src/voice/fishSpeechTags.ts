@@ -12,7 +12,7 @@ const taggedSpeechSchema = z.object({
 });
 
 const displayTagPattern =
-  /\[(?:angry|annoyed|sad|happy|excited|surprised|curious|playful|teasing|frustrated|tired|calm|content|nervous|confident|sarcastic|deadpan|softly|quietly|loudly|whisper(?:ing)?|laugh(?:ing)?|giggle|chuckle|sigh(?:ing)?|gasp|breath(?:ing)?|inhale|exhale|pause|long pause|emphasis|speaking slowly|speaking softly|speaking quickly|cry(?:ing)?|warmly|sleepy)\]/gi;
+  /\[(?:angry|annoyed|sad|happy|excited|surprised|curious|playful|teasing|frustrated|tired|calm|content|nervous|confident|sarcastic|deadpan|softly|quietly|loudly|whisper(?:ing)?|soft tone|laugh(?:ing)?|giggle|chuckle|chuckling|sigh(?:ing)?|gasp(?:ing)?|breath(?:ing)?|inhale|exhale|break|long-break|pause|long pause|emphasis|speaking slowly|speaking softly|speaking quickly|cry(?:ing)?|sobbing|warmly|sleepy)\]/gi;
 
 export function stripFishSpeechTags(text: string): string {
   return text.replace(displayTagPattern, '').replace(/\s{2,}/g, ' ').trim();
@@ -33,7 +33,8 @@ export async function buildTaggedFishSpeechText(args: {
       system: [
         'Rewrite a Discord reply into Fish Audio / Fish Speech S2.1 TTS script text.',
         'Fish S2/S2.1 uses expressive [bracket] tags. Do NOT use old S1-style (parentheses) tags.',
-        'Use the most impactful tags sparingly: [excited], [laugh], [sigh], [whisper], [surprised], [teasing], [pause], [emphasis], [softly], [gasp].',
+        'Prefer documented high-impact tags: [excited], [laughing], [sighing], [whispering], [surprised], [sarcastic], [break], [soft tone], [gasping].',
+        'You may use short natural-language bracket cues like [teasing] only when the documented tags do not fit.',
         'Use 0-3 tags total. Put a tag immediately before the phrase it should color.',
         'Keep the original words and facts. Do not add new content, stage directions, emoji descriptions, or explanations.',
         'If the line is neutral, use no tags. Return only JSON with voice_text.',
@@ -60,7 +61,7 @@ function normalizeTaggedText(text: string): string {
   return text
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '')
-    .replace(/\((angry|sad|happy|excited|laugh(?:ing)?|sigh(?:ing)?|whisper(?:ing)?|pause|surprised)\)/gi, '[$1]')
+    .replace(/\((angry|sad|happy|excited|laugh(?:ing)?|sigh(?:ing)?|whisper(?:ing)?|break|surprised)\)/gi, '[$1]')
     .replace(/\s+/g, ' ')
     .trim();
 }
