@@ -1,4 +1,5 @@
 import { generateText, stepCountIs } from 'ai';
+import type { Message } from 'discord.js';
 import { modelIds, models, gatewayProviderOptions } from '../llm/gateway.js';
 import { embedOne } from '../llm/embeddings.js';
 import { scoreImportance } from '../cognition/importance.js';
@@ -30,6 +31,14 @@ const TOTAL_MEMORY_LIMIT = 24;
 const RECENT_CONTINUITY_HOURS = 48;
 const MAX_MEMORY_LINE_CHARS = 900;
 const TEMPORAL_RECALL_RE = /\b(last night|yesterday|earlier|this morning|today|tonight|last time|remember when|we talked|talked about|did we talk)\b/i;
+const RECALL_QUERY_RE =
+  /\b(remember|recall|forget|forgot|memory|last night|yesterday|earlier|last time|what did we|what were we|we talked|talked about|did we talk)\b/i;
+const RECALL_FAILURE_RE =
+  /\b(i\s+(?:do not|don't|can't|cannot)\s+(?:remember|recall)|i\s+have\s+no\s+(?:memory|record)|no\s+(?:memory|record)\s+of|not\s+seeing\s+that|can't\s+find\s+that|cannot\s+find\s+that|memory\s+(?:is\s+)?blank|not\s+in\s+my\s+memory|i\s+missed\s+that|apparently\s+missed|nothing\s+in\s+(?:my\s+)?(?:memory|context))\b/i;
+const RECALL_REPAIR_MEMORY_LIMIT = 24;
+const RECALL_REPAIR_HISTORY_LIMIT = 25;
+const RECALL_REPAIR_HISTORY_SCAN = 100;
+const RECALL_REPAIR_LOOKBACK_HOURS = 96;
 
 function renderMemories(mems: ScoredMemory[]): string {
   if (!mems.length) return '(no relevant memories yet — this is new territory)';
@@ -124,6 +133,149 @@ function mergeScoredMemories(memories: ScoredMemory[], limit: number): ScoredMem
   return [...byId.values()]
     .sort((a, b) => b.score - a.score || b.createdAt.getTime() - a.createdAt.getTime())
     .slice(0, limit);
+}
+
+function shouldRepairRecall(args: { queryText: string; reply: string; memories: ScoredMemory[] }): boolean {
+  if (!RECALL_QUERY_RE.test(args.queryText)) return false;
+  if (RECALL_FAILURE_RE.test(args.reply)) return true;
+  return args.memories.length === 0 && TEMPORAL_RECALL_RE.test(args.queryText);
+}
+
+async function buildRecallRepairEvidence(args: {
+  store: Awaited<ReturnType<typeof getStore>> | null;
+  subjectId: string;
+  queryText: string;
+  queryEmbedding: number[] | null;
+  toolScope?: DiscordToolScope;
+}): Promise<{ text: string; memories: ScoredMemory[]; history: HistoryTurn[] }> {
+  const [memories, history] = await Promise.all([
+    args.store && args.queryEmbedding
+      ? retrieveDeepRecallMemories({
+          store: args.store,
+          subjectId: args.subjectId,
+          queryText: args.queryText,
+          queryEmbedding: args.queryEmbedding,
+        }).catch((e: any) => {
+          log.warn('recall repair memory search failed', e?.message ?? e);
+          return [];
+        })
+      : Promise.resolve([]),
+    fetchRecallRepairHistory(args.toolScope, args.queryText).catch((e: any) => {
+      log.warn('recall repair Discord history search failed', e?.message ?? e);
+      return [];
+    }),
+  ]);
+
+  const memoryText = memories.length
+    ? memories
+        .map((m) => `- (${m.kind}, ${m.createdAt.toISOString()}) ${clampMemoryLine(extractPersonaMessage(m.content))}`)
+        .join('\n')
+    : '(no additional memory hits)';
+  const historyText = history.length
+    ? history.map((h) => `- ${h.author}: ${clampMemoryLine(h.content)}`).join('\n')
+    : '(no additional Discord history hits)';
+
+  return {
+    text: `Additional recall search results:\n\nLong-term memory hits:\n${memoryText}\n\nDiscord history hits:\n${historyText}`,
+    memories,
+    history,
+  };
+}
+
+async function retrieveDeepRecallMemories(args: {
+  store: Awaited<ReturnType<typeof getStore>>;
+  subjectId: string;
+  queryText: string;
+  queryEmbedding: number[];
+}): Promise<ScoredMemory[]> {
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - RECALL_REPAIR_LOOKBACK_HOURS * 3_600_000);
+  const rows = (await args.store.listSubject(args.subjectId)).filter((m) => !m.validTo || m.validTo > now);
+  const terms = recallTerms(args.queryText);
+  const vectorHits = rows
+    .map((m) => scoreMemory(m, args.queryEmbedding, now))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, RECALL_REPAIR_MEMORY_LIMIT);
+  const lexicalHits = rows
+    .map((m) => ({ memory: m, score: lexicalScore(m.content, terms) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || b.memory.createdAt.getTime() - a.memory.createdAt.getTime())
+    .slice(0, RECALL_REPAIR_MEMORY_LIMIT)
+    .map((x) => markRetrievalLane(scoreMemory(x.memory, args.queryEmbedding, now), 'recall-lexical'));
+  const temporalHits = rows
+    .filter((m) => m.createdAt >= cutoff)
+    .sort((a, b) => continuitySignal(b, now) - continuitySignal(a, now))
+    .slice(0, RECALL_REPAIR_MEMORY_LIMIT)
+    .map((m) => markRetrievalLane(scoreMemory(m, args.queryEmbedding, now), 'recall-temporal'));
+
+  return mergeScoredMemories([...vectorHits, ...lexicalHits, ...temporalHits], RECALL_REPAIR_MEMORY_LIMIT);
+}
+
+async function fetchRecallRepairHistory(scope: DiscordToolScope | undefined, queryText: string): Promise<HistoryTurn[]> {
+  const channel = scope?.channel;
+  if (!channel || !isDiscordHistoryChannel(channel)) return [];
+  const fetched = await channel.messages.fetch({ limit: RECALL_REPAIR_HISTORY_SCAN });
+  const terms = recallTerms(queryText);
+  const rows = [...fetched.values()]
+    .filter((message) => message.id !== scope?.messageId)
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+    .map((message) => ({
+      author:
+        message.author.id === scope?.client?.user?.id
+          ? `${message.author.displayName} (you)`
+          : message.author.bot
+            ? `${message.author.displayName} (bot)`
+            : message.author.displayName,
+      content: message.cleanContent || message.content,
+      score: lexicalScore(`${message.cleanContent}\n${message.content}\n${message.author.displayName}`, terms),
+      timestamp: message.createdTimestamp,
+    }))
+    .filter((row) => row.content.trim().length > 0);
+
+  const lexical = rows.filter((row) => row.score > 0).sort((a, b) => b.score - a.score || b.timestamp - a.timestamp);
+  const source = lexical.length ? lexical : rows.slice(-RECALL_REPAIR_HISTORY_LIMIT);
+  return source.slice(0, RECALL_REPAIR_HISTORY_LIMIT).map((row) => ({ author: row.author, content: row.content }));
+}
+
+function isDiscordHistoryChannel(channel: unknown): channel is { messages: { fetch(args: { limit: number }): Promise<Map<string, Message>> } } {
+  return Boolean(
+    channel &&
+      typeof channel === 'object' &&
+      'messages' in channel &&
+      (channel as { messages?: unknown }).messages &&
+      typeof (channel as { messages: { fetch?: unknown } }).messages.fetch === 'function',
+  );
+}
+
+function recallTerms(text: string): string[] {
+  const stop = new Set([
+    'about',
+    'again',
+    'did',
+    'does',
+    'for',
+    'have',
+    'last',
+    'memory',
+    'remember',
+    'talk',
+    'talked',
+    'that',
+    'the',
+    'this',
+    'what',
+    'when',
+    'were',
+    'with',
+    'you',
+  ]);
+  return [...new Set(text.toLowerCase().match(/[a-z0-9_'-]{3,}/g) ?? [])].filter((term) => !stop.has(term));
+}
+
+function lexicalScore(text: string, terms: string[]): number {
+  if (terms.length === 0) return 0;
+  const haystack = text.toLowerCase();
+  return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
 }
 
 /** A line of recent channel context (Letta-style: feed the last N messages). */
@@ -257,8 +409,58 @@ Your relationship with ${args.userName} right now reads as "${affinity?.level ??
     ...(Object.keys(tools).length ? { tools, stopWhen: stepCountIs(5) } : {}),
   });
 
-  const parsed = parsePersonaOutput(res.text);
-  const reply = stripFishSpeechTags(parsed.message);
+  let parsed = parsePersonaOutput(res.text);
+  let reply = stripFishSpeechTags(parsed.message);
+  let retrievedForTrace = memories;
+  let historyForTrace = args.history ?? [];
+
+  if (
+    memoryEnabled &&
+    shouldRepairRecall({
+      queryText,
+      reply,
+      memories,
+    })
+  ) {
+    try {
+      const repair = await buildRecallRepairEvidence({
+        store,
+        subjectId: args.subjectId,
+        queryText,
+        queryEmbedding,
+        toolScope: args.toolScope,
+      });
+      if (repair.memories.length || repair.history.length) {
+        log.info(
+          `recall repair triggered for ${args.subjectId}: memories=${repair.memories.length} history=${repair.history.length}`,
+        );
+        const repairRes = await generateText({
+          model: models.chat,
+          system: `${system}
+
+${repair.text}
+
+Recall repair instruction:
+Your first draft sounded like you could not remember. Before replying, use the additional recall
+search results above. If they contain relevant evidence, answer from it naturally in character.
+If they still do not contain the answer, say you cannot pin it down without pretending.`,
+          prompt: `${args.userName}: ${args.message}`,
+          temperature: 0.65,
+          maxOutputTokens: 1800,
+          providerOptions: gatewayProviderOptions,
+          ...(Object.keys(tools).length ? { tools, stopWhen: stepCountIs(3) } : {}),
+        });
+        parsed = parsePersonaOutput(repairRes.text);
+        reply = stripFishSpeechTags(parsed.message);
+        retrievedForTrace = mergeScoredMemories([...memories, ...repair.memories], TOTAL_MEMORY_LIMIT);
+        historyForTrace = [...historyForTrace, ...repair.history].slice(-Math.max(config.bot.historyN, 1) - RECALL_REPAIR_HISTORY_LIMIT);
+      } else {
+        log.info(`recall repair found no extra evidence for ${args.subjectId}`);
+      }
+    } catch (e: any) {
+      log.warn('recall repair failed', e?.message ?? e);
+    }
+  }
 
   // Mood momentum (in-RAM, drives presence) + persistent per-user affinity.
   recordMood(args.subjectId, parsed.affect);
@@ -280,8 +482,8 @@ Your relationship with ${args.userName} right now reads as "${affinity?.level ??
       model: modelIds.chat,
       systemChars: system.length,
       promptChars: `${args.userName}: ${args.message}`.length,
-      history: args.history ?? [],
-      retrieved: memories,
+      history: historyForTrace,
+      retrieved: retrievedForTrace,
       affect: parsed.affect,
     });
   }
