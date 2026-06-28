@@ -30,23 +30,30 @@ export async function dream(
     .map((m) => `(${m.kind}, importance ${m.importance.toFixed(0)}) ${m.content}`)
     .join('\n');
 
-  const { text, reasoning } = await reasonedText({
-    model: models.dream,
-    system: `${renderXmlPersonaTemplate(PERSONA.persona, {
-      bot_name: PERSONA.name,
-      username: subjectId,
-      user_name: subjectId,
-      user_input: 'private dream cycle',
-      personality_mood: 'reflective',
-      social_relationship_level: 'close',
-      social_level: 'close',
-    })}\n\n${PERSONA.dreamVoice}`,
-    prompt:
-      `It is the quiet hour. Consolidate the following memories and insights into a single short ` +
-      `diary entry (3–6 sentences). Let the important things surface and the trivial things fade.\n\n${material}`,
-    temperature: 0.85,
-    maxOutputTokens: 1800,
-  });
+  let text: string;
+  let reasoning: string;
+  try {
+    ({ text, reasoning } = await reasonedText({
+      model: models.dream,
+      system: `${renderXmlPersonaTemplate(PERSONA.persona, {
+        bot_name: PERSONA.name,
+        username: subjectId,
+        user_name: subjectId,
+        user_input: 'private dream cycle',
+        personality_mood: 'reflective',
+        social_relationship_level: 'close',
+        social_level: 'close',
+      })}\n\n${PERSONA.dreamVoice}`,
+      prompt:
+        `It is the quiet hour. Consolidate the following memories and insights into a single short ` +
+        `diary entry (3–6 sentences). Let the important things surface and the trivial things fade.\n\n${material}`,
+      temperature: 0.85,
+      maxOutputTokens: 1800,
+    }));
+  } catch (e: any) {
+    log.warn(`subject=${subjectId} dream skipped`, e?.message);
+    return null;
+  }
   const diaryEntry = extractPersonaMessage(text);
 
   const rec = await store.insert({

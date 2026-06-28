@@ -45,6 +45,36 @@ const defaultOwnerUserIds = ['120418341775998976'];
 const codexRoot = path.resolve(opt('DISCORD_CODEX_BRIDGE_QUEUE', opt('DISCORD_BRAIN_CODEX_BRIDGE_QUEUE', 'codex_bridge')));
 const tavilyApiKey = opt('TAVILY_API_KEY', opt('TAVILY_API_TOKEN', opt('TVLY_API_KEY')));
 
+// Which lab serves text generation:
+//   'vercel'     = Vercel AI Gateway (default, deepseek)
+//   'zai'        = GLM via Z.ai OpenAI-compatible PaaS endpoint (free glm-4.5-flash)
+//   'zai-coding' = GLM via Z.ai Anthropic endpoint on your Coding Plan (glm-5.2 etc., best for RP)
+// Embeddings always stay on Vercel to preserve existing 1536-dim memory vectors.
+const rawProvider = opt('LLM_PROVIDER', 'zai-coding').toLowerCase().replace('_', '-');
+const llmProvider = (
+  rawProvider === 'zai' ? 'zai' : rawProvider === 'vercel' ? 'vercel' : 'zai-coding'
+) as 'vercel' | 'zai' | 'zai-coding';
+
+// Per-provider default model ids for each role, so the runtime can switch
+// provider live and know each one's defaults. Worker roles default to FREE flash.
+const modelDefaults = {
+  vercel: {
+    chat: opt('MAIN_MODEL', opt('MODEL_CHAT', 'anthropic/claude-opus-4-8')),
+    dream: opt('DREAM_MODEL', opt('MODEL_REASONER', 'anthropic/claude-opus-4-8')),
+    json: opt('JSON_MODEL', opt('MODEL_FAST', 'anthropic/claude-haiku-4-5')),
+  },
+  zai: {
+    chat: opt('GLM_MAIN_MODEL', 'glm-4.5-flash'),
+    dream: opt('GLM_DREAM_MODEL', 'glm-4.5-flash'),
+    json: opt('GLM_JSON_MODEL', 'glm-4.5-flash'),
+  },
+  'zai-coding': {
+    chat: opt('GLM_CODING_MAIN_MODEL', 'glm-5.2'),
+    dream: opt('GLM_CODING_DREAM_MODEL', 'zai:glm-4.5-flash'),
+    json: opt('GLM_CODING_JSON_MODEL', 'zai:glm-4.5-flash'),
+  },
+} as const;
+
 export const config = {
   discord: {
     token: req('DISCORD_TOKEN'),
@@ -69,6 +99,8 @@ export const config = {
     pdfAttachmentMaxPages: num('DISCORD_PDF_ATTACHMENT_MAX_PAGES', 16),
     /** Replying to bot-authored messages is intentionally opt-in because loops get loud fast. */
     respondToBots: bool('DISCORD_RESPOND_TO_BOTS', false),
+    /** Let the chat LLM use read-only Discord inspection tools in addressed turns. */
+    discordToolsEnabled: bool('DISCORD_TOOLS_ENABLED', true),
     /** Carry the last turn's affect into the next reply so mood has inertia. */
     moodMomentum: bool('MOOD_MOMENTUM', true),
     /** Reflect current mood in the bot's Discord custom status. */
@@ -107,6 +139,25 @@ export const config = {
     baseURL: opt('AI_GATEWAY_BASE_URL') || undefined,
     sort: (opt('GATEWAY_SORT', 'throughput') as 'cost' | 'latency' | 'throughput'),
   },
+  llm: {
+    /** Startup provider; runtime /provider can switch it live. */
+    provider: llmProvider,
+    /** Per-provider default model ids (for live provider switching). */
+    modelDefaults,
+  },
+  zai: {
+    apiKey: opt('ZAI_API_KEY'),
+    // Z.ai OpenAI-compatible (PaaS) endpoint. Account balance gates paid models;
+    // glm-4.5-flash is free.
+    baseURL: opt('ZAI_BASE_URL', 'https://api.z.ai/api/paas/v4'),
+  },
+  zaiCoding: {
+    // Same key, Anthropic-format endpoint, billed against your GLM Coding Plan
+    // (so glm-5.2 / glm-4.7 cost nothing extra within plan limits).
+    apiKey: opt('ZAI_CODING_API_KEY', opt('ZAI_API_KEY')),
+    // @ai-sdk/anthropic appends /messages, so the base must include /v1.
+    baseURL: opt('ZAI_CODING_BASE_URL', 'https://api.z.ai/api/anthropic/v1'),
+  },
   fish: {
     // Fish Audio TTS — replies can come with a native Discord voice message.
     apiKey: opt('FISH_API_KEY'),
@@ -129,12 +180,22 @@ export const config = {
     fishTagsEnabled: bool('TTS_FISH_TAGS_ENABLED', true),
   },
   models: {
-    // Primary names match the user's .env; legacy MODEL_* names kept as fallbacks.
-    chat: opt('MAIN_MODEL', opt('MODEL_CHAT', 'anthropic/claude-opus-4-8')),
-    dream: opt('DREAM_MODEL', opt('MODEL_REASONER', 'anthropic/claude-opus-4-8')),
-    json: opt('JSON_MODEL', opt('MODEL_FAST', 'anthropic/claude-haiku-4-5')),
+    // Active role models for the startup provider (runtime can override live).
+    chat: modelDefaults[llmProvider].chat,
+    dream: modelDefaults[llmProvider].dream,
+    json: modelDefaults[llmProvider].json,
+    // Embeddings run on Vercel by default (keeps the 1536-dim vectors valid),
+    // with an optional local backup so a Vercel outage can't break the bot.
     embed: opt('EMBEDDING_MODEL', opt('MODEL_EMBED', 'openai/text-embedding-3-small')),
     embedDim: num('EMBED_DIM', 1536),
+  },
+  embed: {
+    /** 'vercel' (default) or 'local'. Use 'local' to skip Vercel entirely (free, offline). */
+    provider: (opt('EMBED_PROVIDER', 'vercel').toLowerCase() === 'local' ? 'local' : 'vercel') as 'vercel' | 'local',
+    /** When on Vercel, fall back to the local model if the embedding call fails. */
+    localBackup: bool('EMBED_LOCAL_BACKUP', true),
+    /** Local model (downloaded once, runs offline). 384-dim by default. */
+    localModel: opt('EMBED_LOCAL_MODEL', 'Xenova/all-MiniLM-L6-v2'),
   },
   db: {
     url: opt('DATABASE_URL') || undefined,

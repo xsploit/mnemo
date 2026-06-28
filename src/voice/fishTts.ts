@@ -62,19 +62,43 @@ function audioFormat(): AudioFormat {
  * request fails, so a voice hiccup never blocks the text reply. The `model`
  * header selects the backbone (e.g. s1).
  */
+/** Max synthesis pieces per reply — guards against absurdly long text/cost. */
+const MAX_VOICE_CHUNKS = 8;
+
 export async function synthesizeVoice(text: string): Promise<VoiceClip | null> {
   if (!fishTtsConfigured()) return null;
-  const { clean, inputChars, truncated } = cleanForSpeech(text);
+  const { clean, inputChars } = cleanForSpeech(text);
   if (!clean) return null;
 
   const format = audioFormat();
-  const request = new TTSRequest(clean, {
+  // Chunk long replies on sentence boundaries and concatenate the audio, so the
+  // whole message gets voiced instead of being truncated at maxChars.
+  const allPieces = chunkForSpeech(clean, config.fish.maxChars);
+  const pieces = allPieces.slice(0, MAX_VOICE_CHUNKS);
+  const buffers: Buffer[] = [];
+  for (const piece of pieces) {
+    const buf = await synthesizeRaw(piece, format);
+    if (buf && buf.length > 0) buffers.push(buf);
+  }
+  if (buffers.length === 0) return null;
+
+  return {
+    buffer: Buffer.concat(buffers),
+    ext: format,
+    contentType: contentTypeFor(format),
+    inputChars,
+    truncated: pieces.length < allPieces.length,
+  };
+}
+
+/** One Fish TTS request for an already-cleaned text piece → audio buffer (or null). */
+async function synthesizeRaw(cleanText: string, format: AudioFormat): Promise<Buffer | null> {
+  const request = new TTSRequest(cleanText, {
     referenceId: config.fish.voiceId,
     format,
     normalize: true,
     latency: 'normal',
   });
-
   // Only send the model header when one is configured; empty = account default.
   const headers = config.fish.model ? { model: config.fish.model } : undefined;
   try {
@@ -83,9 +107,7 @@ export async function synthesizeVoice(text: string): Promise<VoiceClip | null> {
       for await (const chunk of getSession().tts(request, headers)) chunks.push(chunk);
       return Buffer.concat(chunks);
     })();
-    const buffer = await Promise.race([collect, timeoutReject(config.fish.timeoutMs)]);
-    if (buffer.length === 0) return null;
-    return { buffer, ext: format, contentType: contentTypeFor(format), inputChars, truncated };
+    return await Promise.race([collect, timeoutReject(config.fish.timeoutMs)]);
   } catch (e: any) {
     log.warn('tts request failed', e?.message ?? e);
     return null;
@@ -180,19 +202,41 @@ function timeoutReject(ms: number): Promise<never> {
   return new Promise((_, reject) => setTimeout(() => reject(new Error(`tts timeout after ${ms}ms`)), ms));
 }
 
-/** Strip things that sound bad when read aloud, and cap length (Fish bills per byte). */
-function cleanForSpeech(text: string): { clean: string; inputChars: number; truncated: boolean } {
-  let t = text
+/** Strip things that sound bad when read aloud. No truncation — long text is chunked. */
+function cleanForSpeech(text: string): { clean: string; inputChars: number } {
+  const t = text
     .replace(/```[\s\S]*?```/g, ' code block ')
     .replace(/https?:\/\/\S+/g, ' link ')
     .replace(/<a?:\w+:\d+>/g, '')
     .replace(/[*_~`>#]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-  const inputChars = t.length;
-  const truncated = t.length > config.fish.maxChars;
-  if (truncated) t = `${t.slice(0, config.fish.maxChars).trimEnd()}...`;
-  return { clean: t, inputChars, truncated };
+  return { clean: t, inputChars: t.length };
+}
+
+/** Split cleaned text into <=maxChars pieces on sentence boundaries for synthesis. */
+function chunkForSpeech(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text];
+  const sentences = text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) ?? [text];
+  const chunks: string[] = [];
+  let current = '';
+  for (const sentence of sentences) {
+    if (sentence.length > maxChars) {
+      if (current.trim()) {
+        chunks.push(current.trim());
+        current = '';
+      }
+      for (let i = 0; i < sentence.length; i += maxChars) chunks.push(sentence.slice(i, i + maxChars).trim());
+      continue;
+    }
+    if (current.length + sentence.length > maxChars && current.trim()) {
+      chunks.push(current.trim());
+      current = '';
+    }
+    current += sentence;
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks.filter(Boolean);
 }
 
 function contentTypeFor(format: string): string {

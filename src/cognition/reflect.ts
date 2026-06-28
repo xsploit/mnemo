@@ -47,10 +47,13 @@ export async function reflect(
     social_level: 'friendly',
   });
 
-  const { object, reasoning } = await reasonedObject({
-    model: models.json,
-    schema: reflectionSchema,
-    system: `${persona}
+  let object: z.infer<typeof reflectionSchema>;
+  let reasoning: string;
+  try {
+    ({ object, reasoning } = await reasonedObject({
+      model: models.json,
+      schema: reflectionSchema,
+      system: `${persona}
 
 You are the reflective layer of ${config.bot.name}'s own memory. Given recent memories, first identify the few most salient questions ${config.bot.name} would privately ask about this person or the relationship, then answer each as a concise higher-level insight.
 
@@ -59,9 +62,13 @@ Voice contract:
 - Preserve the configured character voice while staying grounded in cited memory indices.
 - Do not turn personality, humor, or playful phrasing into a failure by itself.
 - Each insight must be supported by specific memories. Insights should change how ${config.bot.name} relates to someone, not restate raw facts.`,
-    prompt: `Recent memories:\n${numbered}`,
-    temperature: 0.5,
-  });
+      prompt: `Recent memories:\n${numbered}`,
+      temperature: 0.5,
+    }));
+  } catch (e: any) {
+    log.warn(`subject=${subjectId} reflection skipped`, e?.message);
+    return { created: [], reasoning: `reflection model failed; memories retained: ${e?.message ?? e}` };
+  }
 
   const created: MemoryRecord[] = [];
   for (const ins of object.insights) {

@@ -58,14 +58,19 @@ export async function runSleepCycle(subjectId: string, opts: { lookbackHours?: n
   if (observations.length === 0) return report;
 
   // 2. CONSOLIDATE — fetch the semantic facts most relevant to this batch first.
-  const seed = await embedOne(observations.map((o) => o.content).join(' \n '));
-  const existingFacts = await store.retrieve({
-    subjectId,
-    queryEmbedding: seed,
-    kinds: ['semantic'],
-    limit: 20,
-    validOnly: true,
-  });
+  let existingFacts: MemoryRecord[] = [];
+  try {
+    const seed = await embedOne(observations.map((o) => o.content).join(' \n '));
+    existingFacts = await store.retrieve({
+      subjectId,
+      queryEmbedding: seed,
+      kinds: ['semantic'],
+      limit: 20,
+      validOnly: true,
+    });
+  } catch (e: any) {
+    log.warn(`subject=${subjectId} existing-fact retrieval skipped`, e?.message);
+  }
   const consolidation = await consolidate(store, subjectId, observations, existingFacts);
   report.factsAdded = consolidation.added.length;
   report.factsUpdated = consolidation.updated;

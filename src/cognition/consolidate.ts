@@ -48,18 +48,27 @@ export async function consolidate(
     ? existingFacts.map((f) => `[${f.id}] ${f.content}`).join('\n')
     : '(none yet)';
 
-  const { object, reasoning } = await reasonedObject({
-    model: models.json,
-    schema: opSchema,
-    system:
-      'You maintain a companion AI\'s long-term semantic memory about a person. ' +
-      'From new observations, distill durable facts. Reconcile them against existing facts: ' +
-      'ADD genuinely new facts; UPDATE when a fact\'s truth has changed (cite the old id); ' +
-      'DELETE when an existing fact is now false; NOOP for fleeting chatter. ' +
-      'Prefer few, high-signal facts over many trivial ones.',
-    prompt: `New observations:\n${obsText}\n\nExisting facts:\n${factText}`,
-    temperature: 0.2,
-  });
+  let object: z.infer<typeof opSchema>;
+  let reasoning: string;
+  try {
+    ({ object, reasoning } = await reasonedObject({
+      model: models.json,
+      schema: opSchema,
+      system:
+        'You maintain a companion AI\'s long-term semantic memory about a person. ' +
+        'From new observations, distill durable facts. Reconcile them against existing facts: ' +
+        'ADD genuinely new facts; UPDATE when a fact\'s truth has changed (cite the old id); ' +
+        'DELETE when an existing fact is now false; NOOP for fleeting chatter. ' +
+        'Prefer few, high-signal facts over many trivial ones.',
+      prompt: `New observations:\n${obsText}\n\nExisting facts:\n${factText}`,
+      temperature: 0.2,
+    }));
+  } catch (e: any) {
+    reasoning = `consolidation model failed; episodic memories retained: ${e?.message ?? e}`;
+    await store.markProcessed(observations.map((o) => o.id));
+    log.warn(`subject=${subjectId} consolidation skipped; marked ${observations.length} obs processed`, e?.message);
+    return { added: [], updated: 0, deleted: 0, reasoning };
+  }
 
   const result: ConsolidationResult = { added: [], updated: 0, deleted: 0, reasoning };
   const now = new Date();

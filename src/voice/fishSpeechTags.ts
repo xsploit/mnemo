@@ -1,14 +1,16 @@
-import { generateObject } from 'ai';
 import { z } from 'zod';
-import { models, gatewayProviderOptions } from '../llm/gateway.js';
+import { models } from '../llm/gateway.js';
+import { reasonedObject } from '../llm/reason.js';
 import type { PersonaAffect } from '../llm/personaOutput.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 
 const log = logger('tts:fish-tags');
 
+// Generous cap so long replies aren't rejected; the actual TTS input is clamped
+// downstream by synthesizeVoice (config.fish.maxChars) anyway.
 const taggedSpeechSchema = z.object({
-  voice_text: z.string().min(1).max(1600),
+  voice_text: z.string().min(1).max(6000),
 });
 
 const displayTagPattern =
@@ -27,7 +29,7 @@ export async function buildTaggedFishSpeechText(args: {
   if (!config.fish.fishTagsEnabled || !displayText) return displayText;
 
   try {
-    const result = await generateObject({
+    const result = await reasonedObject({
       model: models.json,
       schema: taggedSpeechSchema,
       system: [
@@ -46,8 +48,8 @@ export async function buildTaggedFishSpeechText(args: {
         `Display text: ${displayText}`,
       ].join('\n'),
       temperature: 0.35,
-      maxOutputTokens: 500,
-      providerOptions: gatewayProviderOptions,
+      // Generous: deepseek-flash spends reasoning tokens before the JSON payload.
+      maxOutputTokens: 2000,
     });
     const tagged = normalizeTaggedText(result.object.voice_text);
     return tagged || displayText;

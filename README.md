@@ -15,6 +15,7 @@ Current practical surface:
 - DM, @mention, or reply-to-bot chat; this is a normal mention bot, not a slash-only chatbot.
 - Letta-style batching and recent-channel-history context.
 - Bot-authored messages are visible as context; replying to bot authors is gated by `/botchat` and defaults off.
+- Addressed chat turns can use read-only Discord tools for guild/channel/member/permission/thread/message context, including bot-authored history, while respecting requester visibility and owner/admin gates.
 - Text-like and PDF Discord attachments on addressed messages are read into the current turn as untrusted context, up to `DISCORD_TEXT_ATTACHMENT_MAX_BYTES` per file, `DISCORD_TEXT_ATTACHMENT_MAX_FILES` per message, `DISCORD_TEXT_ATTACHMENT_MAX_CHARS` total text, and `DISCORD_PDF_ATTACHMENT_MAX_PAGES` PDF pages. Image and voice/audio attachments are surfaced as metadata instead of silently disappearing. Recent history includes attachment metadata.
 - Live replies, dream diary, and reflection memories use the configured character voice, so Hikari should sound like the configured character instead of a generic analyst. Grounding notes improve factual care; they are not supposed to flatten the voice.
 - When Fish TTS is enabled, Hikari can generate a private Fish Speech S2.1 voice script with sparse `[bracket]` emotion tags such as `[excited]`, `[laughing]`, `[sighing]`, `[whispering]`, `[surprised]`, `[sarcastic]`, `[break]`, `[soft tone]`, and `[gasping]`; Discord only sees the cleaned display text.

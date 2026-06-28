@@ -164,13 +164,32 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
       message,
       history,
       kind: batch.kind,
+      toolScope: {
+        channelId: msg.channelId,
+        guildId: msg.guildId,
+        messageId: msg.id,
+        authorId: msg.author.id,
+        authorName: msg.author.displayName ?? msg.author.username,
+        authorPermissions: msg.member?.permissions ?? null,
+        client,
+        guild: msg.guild,
+        channel: msg.channel,
+      },
     });
     const reply = response.message;
     if (config.bot.moodPresence) applyMoodPresence(client);
     const chunks = splitMessage(reply);
     for (let i = 0; i < chunks.length; i++) {
-      if (i === 0) await msg.reply(chunks[i]!);
-      else if ('send' in msg.channel) await msg.channel.send(chunks[i]!);
+      const part = chunks[i]!;
+      if (i === 0) {
+        // Reply to the user's message, but if that message was deleted the
+        // reference is gone — fall back to a plain channel send instead of erroring.
+        await msg.reply(part).catch(async () => {
+          if ('send' in msg.channel) await msg.channel.send(part);
+        });
+      } else if ('send' in msg.channel) {
+        await msg.channel.send(part);
+      }
     }
 
     // Voice clip: text first, then her voice, when TTS is on for this channel.

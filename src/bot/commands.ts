@@ -34,7 +34,18 @@ import { getRepliesPaused, getRespondToBots, setRepliesPaused, setRespondToBots 
 import { ttsPolicy } from './ttsPolicy.js';
 import { fishTtsConfigured } from '../voice/fishTts.js';
 import { extractPersonaMessage } from '../llm/personaOutput.js';
-import { modelIds, resetRuntimeModel, runtimeModelStatus, setRuntimeModel, summarizeDiscordHistory, type RuntimeModelRole } from '../llm/gateway.js';
+import {
+  activeLlmProvider,
+  availableProviders,
+  modelIds,
+  resetRuntimeModel,
+  runtimeModelStatus,
+  setLlmProvider,
+  setRuntimeModel,
+  summarizeDiscordHistory,
+  type LlmProvider,
+  type RuntimeModelRole,
+} from '../llm/gateway.js';
 import { formatGatewayModelList, listGatewayModels, type GatewayModelCatalog, type GatewayModelInfo } from '../llm/modelCatalog.js';
 import { splitMessage } from './format.js';
 import { attachmentSummaryForHistory } from './attachments.js';
@@ -298,6 +309,19 @@ export const commandData = [
     .setDescription('Owner-only: turn voice clips on or off for this channel.')
     .addBooleanOption((o) =>
       o.setName('enabled').setDescription('Attach a voice clip with replies here. Omit to show status.'),
+    ),
+  new SlashCommandBuilder()
+    .setName('provider')
+    .setDescription('Owner-only: view or switch the LLM provider (Vercel / GLM).')
+    .addStringOption((o) =>
+      o
+        .setName('set')
+        .setDescription('Switch the active provider. Omit to show status.')
+        .addChoices(
+          { name: 'vercel — Vercel AI Gateway (deepseek)', value: 'vercel' },
+          { name: 'zai — free GLM flash (PaaS)', value: 'zai' },
+          { name: 'zai-coding — glm-5.2 best RP + free worker', value: 'zai-coding' },
+        ),
     ),
   new SlashCommandBuilder()
     .setName('model')
@@ -1321,6 +1345,35 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
         content: `Voice clips are ${now ? 'on 🔊' : 'off 🔇'} in this channel (global default ${
           config.fish.enabledByDefault ? 'on' : 'off'
         }).`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    case 'provider': {
+      if (!isOwner(i.user.id)) {
+        await i.reply({ content: 'Only configured owners can change the LLM provider.', ephemeral: true });
+        return;
+      }
+      const choice = i.options.getString('set') as LlmProvider | null;
+      if (choice) {
+        try {
+          setLlmProvider(choice);
+        } catch (e) {
+          await i.reply({ content: e instanceof Error ? e.message : 'Provider switch failed.', ephemeral: true });
+          return;
+        }
+      }
+      const modelLine = runtimeModelStatus()
+        .map((s) => `${s.role}=\`${s.model}\``)
+        .join(' · ');
+      await i.reply({
+        content: [
+          `Active provider: **${activeLlmProvider()}**`,
+          `Available: ${availableProviders().join(', ')}`,
+          `Models: ${modelLine}`,
+          `Embeddings: \`${modelIds.embed}\` (Vercel; local backup on failure)`,
+        ].join('\n'),
         ephemeral: true,
       });
       return;
