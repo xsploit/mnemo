@@ -7,6 +7,16 @@ import type { PersonaAffect } from '../llm/personaOutput.js';
 
 const TRACE_PATH = path.resolve('data', 'turn-traces.jsonl');
 
+export interface ToolTraceEntry {
+  phase: string;
+  step: number;
+  toolName: string;
+  toolCallId?: string | null;
+  input?: unknown;
+  output?: unknown;
+  error?: unknown;
+}
+
 export interface TurnTraceInput {
   subjectId: string;
   channelId: string;
@@ -21,6 +31,7 @@ export interface TurnTraceInput {
   history: HistoryTurn[];
   retrieved: ScoredMemory[];
   affect?: PersonaAffect | null;
+  toolTrace?: ToolTraceEntry[];
 }
 
 export interface TurnTraceRecord extends TurnTraceInput {
@@ -44,6 +55,15 @@ export async function appendTurnTrace(input: TurnTraceInput): Promise<TurnTraceR
       content: clamp(item.content, 1600),
       reasoning: item.reasoning ? clamp(item.reasoning, 1200) : null,
       embedding: null,
+    })),
+    toolTrace: (input.toolTrace ?? []).slice(0, 80).map((item) => ({
+      phase: clamp(item.phase, 80),
+      step: item.step,
+      toolName: clamp(item.toolName, 160),
+      toolCallId: item.toolCallId ? clamp(item.toolCallId, 240) : null,
+      input: clampUnknown(item.input, 4000),
+      output: clampUnknown(item.output, 12000),
+      error: clampUnknown(item.error, 4000),
     })),
   };
   await fs.mkdir(path.dirname(TRACE_PATH), { recursive: true });
@@ -120,10 +140,62 @@ function traceSearchScore(trace: TurnTraceRecord, terms: string[]): number {
     trace.answer,
     ...trace.history.flatMap((item) => [item.author, item.content]),
     ...trace.retrieved.map((item) => item.content),
+    ...(trace.toolTrace ?? []).flatMap((item) => [
+      item.phase,
+      item.toolName,
+      item.toolCallId ?? '',
+      stringifyUnknown(item.input),
+      stringifyUnknown(item.output),
+      stringifyUnknown(item.error),
+    ]),
   ]
     .join('\n')
     .toLowerCase();
   return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
+}
+
+function clampUnknown(value: unknown, maxChars: number): unknown {
+  if (value === undefined || value === null) return value;
+  const rendered = stringifyUnknown(value);
+  if (rendered.length <= maxChars) {
+    if (typeof value === 'string') return rendered;
+    try {
+      return JSON.parse(rendered);
+    } catch {
+      return rendered;
+    }
+  }
+  return {
+    truncated: true,
+    chars: rendered.length,
+    preview: clamp(rendered, maxChars),
+  };
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (value === undefined) return '';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) return `${value.name}: ${value.message}`;
+  const seen = new WeakSet<object>();
+  try {
+    return (
+      JSON.stringify(
+        value,
+        (_key, item) => {
+          if (typeof item === 'bigint') return item.toString();
+          if (item && typeof item === 'object') {
+            if (seen.has(item)) return '[Circular]';
+            seen.add(item);
+          }
+          return item;
+        },
+        2,
+      ) ?? String(value)
+    );
+  } catch {
+    return String(value);
+  }
 }
 
 function searchTerms(query: string): string[] {

@@ -15,7 +15,7 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { renderXmlPersonaTemplate } from '../xmlPersona.js';
 import { extractPersonaMessage, parsePersonaOutput } from '../llm/personaOutput.js';
-import { appendTurnTrace } from './turnTrace.js';
+import { appendTurnTrace, type ToolTraceEntry } from './turnTrace.js';
 import { renderPacificTimeContext } from '../timeContext.js';
 import { createTavilyTools } from '../web/tavily.js';
 import { stripFishSpeechTags } from '../voice/fishSpeechTags.js';
@@ -408,6 +408,7 @@ Your relationship with ${args.userName} right now reads as "${affinity?.level ??
       memoryEnabled,
     }),
   };
+  const toolTrace: ToolTraceEntry[] = [];
   const res = await generateText({
     model: models.chat,
     system,
@@ -418,6 +419,7 @@ Your relationship with ${args.userName} right now reads as "${affinity?.level ??
     providerOptions: gatewayProviderOptions,
     ...(Object.keys(tools).length ? { tools, stopWhen: stepCountIs(5) } : {}),
   });
+  toolTrace.push(...extractToolTrace(res, 'initial'));
 
   let parsed = parsePersonaOutput(res.text);
   let reply = stripFishSpeechTags(parsed.message);
@@ -460,6 +462,7 @@ If they still do not contain the answer, say you cannot pin it down without pret
           providerOptions: gatewayProviderOptions,
           ...(Object.keys(tools).length ? { tools, stopWhen: stepCountIs(3) } : {}),
         });
+        toolTrace.push(...extractToolTrace(repairRes, 'recall-repair'));
         parsed = parsePersonaOutput(repairRes.text);
         reply = stripFishSpeechTags(parsed.message);
         retrievedForTrace = mergeScoredMemories([...memories, ...repair.memories], TOTAL_MEMORY_LIMIT);
@@ -495,6 +498,7 @@ If they still do not contain the answer, say you cannot pin it down without pret
       history: historyForTrace,
       retrieved: retrievedForTrace,
       affect: parsed.affect,
+      toolTrace,
     });
   }
 
@@ -521,6 +525,130 @@ If they still do not contain the answer, say you cannot pin it down without pret
   }
 
   return { message: reply, affect: parsed.affect };
+}
+
+function extractToolTrace(result: unknown, phase: string): ToolTraceEntry[] {
+  const root = asRecord(result);
+  if (!root) return [];
+
+  const entries: ToolTraceEntry[] = [];
+  const seen = new Set<string>();
+  const steps = collectArray(root, 'steps');
+
+  steps.forEach((stepValue, index) => {
+    collectToolTraceEntries({
+      phase,
+      step: index + 1,
+      calls: collectArray(stepValue, 'toolCalls', 'staticToolCalls', 'dynamicToolCalls'),
+      results: collectArray(stepValue, 'toolResults', 'staticToolResults', 'dynamicToolResults'),
+      entries,
+      seen,
+    });
+  });
+
+  collectToolTraceEntries({
+    phase,
+    step: steps.length || 1,
+    calls: collectArray(root, 'toolCalls', 'staticToolCalls', 'dynamicToolCalls'),
+    results: collectArray(root, 'toolResults', 'staticToolResults', 'dynamicToolResults'),
+    entries,
+    seen,
+  });
+
+  return entries;
+}
+
+function collectToolTraceEntries(args: {
+  phase: string;
+  step: number;
+  calls: Record<string, unknown>[];
+  results: Record<string, unknown>[];
+  entries: ToolTraceEntry[];
+  seen: Set<string>;
+}): void {
+  const resultsByCallId = new Map<string, Record<string, unknown>>();
+  for (const result of args.results) {
+    const id = stringProp(result, 'toolCallId');
+    if (id) resultsByCallId.set(id, result);
+  }
+
+  args.calls.forEach((call, index) => {
+    const id = stringProp(call, 'toolCallId');
+    const result = id ? resultsByCallId.get(id) : undefined;
+    const toolName = stringProp(call, 'toolName') ?? stringProp(result, 'toolName') ?? stringProp(call, 'name') ?? 'unknown_tool';
+    const key = id ? `${args.phase}:${args.step}:${id}` : `${args.phase}:${args.step}:${toolName}:${index}`;
+    if (args.seen.has(key)) return;
+    args.seen.add(key);
+    args.entries.push({
+      phase: args.phase,
+      step: args.step,
+      toolName,
+      toolCallId: id ?? null,
+      input: pickToolInput(call, result),
+      output: pickToolOutput(result),
+      error: pickToolError(result),
+    });
+  });
+
+  args.results.forEach((result, index) => {
+    const id = stringProp(result, 'toolCallId');
+    const toolName = stringProp(result, 'toolName') ?? stringProp(result, 'name') ?? 'unknown_tool';
+    const key = id ? `${args.phase}:${args.step}:${id}` : `${args.phase}:${args.step}:${toolName}:result:${index}`;
+    if (args.seen.has(key)) return;
+    args.seen.add(key);
+    args.entries.push({
+      phase: args.phase,
+      step: args.step,
+      toolName,
+      toolCallId: id ?? null,
+      input: pickToolInput(result),
+      output: pickToolOutput(result),
+      error: pickToolError(result),
+    });
+  });
+}
+
+function collectArray(value: unknown, ...keys: string[]): Record<string, unknown>[] {
+  const record = asRecord(value);
+  if (!record) return [];
+  const out: Record<string, unknown>[] = [];
+  const seen = new Set<unknown>();
+  for (const key of keys) {
+    const maybeArray = record[key];
+    if (!Array.isArray(maybeArray)) continue;
+    for (const item of maybeArray) {
+      if (seen.has(item)) continue;
+      const itemRecord = asRecord(item);
+      if (itemRecord) {
+        seen.add(item);
+        out.push(itemRecord);
+      }
+    }
+  }
+  return out;
+}
+
+function pickToolInput(call: Record<string, unknown>, result?: Record<string, unknown>): unknown {
+  return call['input'] ?? call['args'] ?? call['arguments'] ?? result?.['input'] ?? result?.['args'] ?? result?.['arguments'];
+}
+
+function pickToolOutput(result?: Record<string, unknown>): unknown {
+  if (!result) return undefined;
+  return result['output'] ?? result['result'] ?? result['content'];
+}
+
+function pickToolError(result?: Record<string, unknown>): unknown {
+  if (!result) return undefined;
+  return result['error'] ?? (result['isError'] ? result : undefined);
+}
+
+function stringProp(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === 'string' && value.trim().length ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 function clampForCognition(text: string, maxChars: number): string {

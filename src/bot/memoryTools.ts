@@ -72,7 +72,7 @@ export function createMemorySearchTools(scope: MemoryToolScope): ToolSet {
     }),
     history_search: tool({
       description:
-        'Read-only. Search saved bot turn history: prior user prompts, bot replies, packed channel context, and retrieved memories.',
+        'Read-only. Search saved bot turn history: prior user prompts, bot replies, packed channel context, retrieved memories, and prior tool call results.',
       inputSchema: z.object({
         query: z.string().min(1).max(500),
         scope: historyScopeSchema.default('both'),
@@ -132,6 +132,15 @@ function formatTraceHit(trace: TurnTraceRecord): Record<string, unknown> {
       createdAt: item.createdAt instanceof Date ? item.createdAt.toISOString() : String(item.createdAt),
       content: clamp(item.content, 500),
     })),
+    toolTrace: (trace.toolTrace ?? []).slice(0, 10).map((item) => ({
+      phase: item.phase,
+      step: item.step,
+      toolName: item.toolName,
+      toolCallId: item.toolCallId ?? null,
+      input: clampUnknown(item.input, 800),
+      output: clampUnknown(item.output, 1800),
+      error: clampUnknown(item.error, 800),
+    })),
   };
 }
 
@@ -179,4 +188,44 @@ function clamp(text: string, maxChars: number): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, Math.max(0, maxChars - 24))} [truncated]`;
+}
+
+function clampUnknown(value: unknown, maxChars: number): unknown {
+  if (value === undefined || value === null) return value;
+  const text = stringifyUnknown(value);
+  if (text.length <= maxChars) {
+    if (typeof value === 'string') return text;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  return clamp(text, maxChars);
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (value === undefined) return '';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) return `${value.name}: ${value.message}`;
+  const seen = new WeakSet<object>();
+  try {
+    return (
+      JSON.stringify(
+        value,
+        (_key, item) => {
+          if (typeof item === 'bigint') return item.toString();
+          if (item && typeof item === 'object') {
+            if (seen.has(item)) return '[Circular]';
+            seen.add(item);
+          }
+          return item;
+        },
+        2,
+      ) ?? String(value)
+    );
+  } catch {
+    return String(value);
+  }
 }
