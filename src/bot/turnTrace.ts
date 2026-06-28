@@ -52,7 +52,7 @@ export async function appendTurnTrace(input: TurnTraceInput): Promise<TurnTraceR
 }
 
 export async function latestTurnTraceForChannel(channelId: string): Promise<TurnTraceRecord | null> {
-  const traces = await readTraces();
+  const traces = await readTurnTraces();
   for (let index = traces.length - 1; index >= 0; index--) {
     const trace = traces[index];
     if (trace?.channelId === channelId) return trace;
@@ -60,7 +60,32 @@ export async function latestTurnTraceForChannel(channelId: string): Promise<Turn
   return null;
 }
 
-async function readTraces(): Promise<TurnTraceRecord[]> {
+export async function searchTurnTraces(args: {
+  query: string;
+  subjectId?: string;
+  channelId?: string;
+  limit?: number;
+  scanLimit?: number;
+}): Promise<TurnTraceRecord[]> {
+  const limit = Math.min(Math.max(args.limit ?? 10, 1), 50);
+  const scanLimit = Math.min(Math.max(args.scanLimit ?? 300, limit), 2000);
+  const terms = searchTerms(args.query);
+  const traces = (await readTurnTraces())
+    .filter((trace) => !args.subjectId || trace.subjectId === args.subjectId)
+    .filter((trace) => !args.channelId || trace.channelId === args.channelId)
+    .slice(-scanLimit);
+
+  if (terms.length === 0) return traces.slice(-limit).reverse();
+
+  return traces
+    .map((trace) => ({ trace, score: traceSearchScore(trace, terms) }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || Date.parse(right.trace.timestamp) - Date.parse(left.trace.timestamp))
+    .slice(0, limit)
+    .map((item) => item.trace);
+}
+
+export async function readTurnTraces(): Promise<TurnTraceRecord[]> {
   try {
     const text = await fs.readFile(TRACE_PATH, 'utf8');
     return text
@@ -85,4 +110,43 @@ function isTrace(value: unknown): value is TurnTraceRecord {
 
 function clamp(value: string, maxChars: number): string {
   return value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 24))}\n[trace truncated]`;
+}
+
+function traceSearchScore(trace: TurnTraceRecord, terms: string[]): number {
+  const haystack = [
+    trace.authorName,
+    trace.kind,
+    trace.prompt,
+    trace.answer,
+    ...trace.history.flatMap((item) => [item.author, item.content]),
+    ...trace.retrieved.map((item) => item.content),
+  ]
+    .join('\n')
+    .toLowerCase();
+  return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
+}
+
+function searchTerms(query: string): string[] {
+  const stop = new Set([
+    'about',
+    'again',
+    'did',
+    'does',
+    'for',
+    'have',
+    'last',
+    'memory',
+    'remember',
+    'recall',
+    'search',
+    'that',
+    'the',
+    'this',
+    'what',
+    'when',
+    'were',
+    'with',
+    'you',
+  ]);
+  return [...new Set(query.toLowerCase().match(/[a-z0-9_'-]{3,}/g) ?? [])].filter((term) => !stop.has(term));
 }
