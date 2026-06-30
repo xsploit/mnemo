@@ -46,7 +46,13 @@ import {
   type LlmProvider,
   type RuntimeModelRole,
 } from '../llm/gateway.js';
-import { formatGatewayModelList, listGatewayModels, type GatewayModelCatalog, type GatewayModelInfo } from '../llm/modelCatalog.js';
+import {
+  formatGatewayModelList,
+  listProviderModels,
+  modelCatalogProviderLabel,
+  type GatewayModelCatalog,
+  type GatewayModelInfo,
+} from '../llm/modelCatalog.js';
 import { splitMessage } from './format.js';
 import { attachmentSummaryForHistory } from './attachments.js';
 import { latestTurnTraceForChannel } from './turnTrace.js';
@@ -94,6 +100,7 @@ type MemoryPanelView = (typeof MEMORY_PANEL_VIEWS)[number];
 interface ModelPickerState {
   userId: string;
   role: RuntimeModelRole;
+  provider: LlmProvider;
   query: string;
   page: number;
   createdAt: number;
@@ -330,13 +337,13 @@ export const commandData = [
     .addSubcommand((s) =>
       s
         .setName('list')
-        .setDescription('List Vercel AI Gateway models.')
+        .setDescription('List models for the active provider.')
         .addStringOption((o) => o.setName('query').setDescription('Optional model/provider search')),
     )
     .addSubcommand((s) =>
       s
         .setName('pick')
-        .setDescription('Open a Vercel AI Gateway model dropdown.')
+        .setDescription('Open an active-provider model dropdown.')
         .addStringOption((o) => o.setName('role').setDescription('Model role').setRequired(true).addChoices(...modelRoleChoices))
         .addStringOption((o) => o.setName('query').setDescription('Optional model/provider search')),
     )
@@ -345,7 +352,7 @@ export const commandData = [
         .setName('set')
         .setDescription('Persistently set a runtime model until reset.')
         .addStringOption((o) => o.setName('role').setDescription('Model role').setRequired(true).addChoices(...modelRoleChoices))
-        .addStringOption((o) => o.setName('model_id').setDescription('Vercel AI Gateway model id.').setRequired(true)),
+        .addStringOption((o) => o.setName('model_id').setDescription('Model id, optionally provider-prefixed.').setRequired(true)),
     )
     .addSubcommand((s) =>
       s
@@ -1197,7 +1204,7 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
       if (subcommand === 'list') {
         await i.deferReply({ ephemeral: true });
         const query = i.options.getString('query') ?? '';
-        await editLongReply(i, formatGatewayModelList(await listGatewayModels(query, 40)));
+        await editLongReply(i, formatGatewayModelList(await listProviderModels(activeLlmProvider(), query, 40)));
         return;
       }
       if (subcommand === 'pick') {
@@ -1834,7 +1841,7 @@ function clampMemoryPanelText(text: string): string {
 function createModelPickerState(userId: string, role: RuntimeModelRole, query: string): string {
   pruneModelPickerStates();
   const pickerId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-  modelPickerStates.set(pickerId, { userId, role, query, page: 0, createdAt: Date.now() });
+  modelPickerStates.set(pickerId, { userId, role, provider: activeLlmProvider(), query, page: 0, createdAt: Date.now() });
   return pickerId;
 }
 
@@ -1853,10 +1860,10 @@ function pruneModelPickerStates(): void {
 }
 
 async function listModelPickerCatalog(state: ModelPickerState): Promise<GatewayModelCatalog> {
-  let catalog = await listGatewayModels(state.query, MODEL_PICKER_PAGE_SIZE, state.page * MODEL_PICKER_PAGE_SIZE);
+  let catalog = await listProviderModels(state.provider, state.query, MODEL_PICKER_PAGE_SIZE, state.page * MODEL_PICKER_PAGE_SIZE);
   if (catalog.models.length === 0 && state.page > 0 && catalog.total > 0) {
     state.page = Math.max(0, Math.ceil(catalog.total / MODEL_PICKER_PAGE_SIZE) - 1);
-    catalog = await listGatewayModels(state.query, MODEL_PICKER_PAGE_SIZE, state.page * MODEL_PICKER_PAGE_SIZE);
+    catalog = await listProviderModels(state.provider, state.query, MODEL_PICKER_PAGE_SIZE, state.page * MODEL_PICKER_PAGE_SIZE);
   }
   return catalog;
 }
@@ -1870,7 +1877,7 @@ function createModelPickerComponents(
   const page = modelPickerPage(catalog);
   const menu = new StringSelectMenuBuilder()
     .setCustomId(`modelpick:${userId}:${role}:${pickerId}`)
-    .setPlaceholder(`Set ${modelRoleLabel(role)} model - page ${page.current}/${page.total}`)
+    .setPlaceholder(`Set ${modelRoleLabel(role)} model - ${modelCatalogProviderLabel(catalog.provider)} ${page.current}/${page.total}`)
     .addOptions(modelPickerOptions(role, catalog));
   const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -1890,11 +1897,11 @@ function createModelPickerComponents(
 function createCustomModelModal(userId: string, role: RuntimeModelRole): ModalBuilder {
   const input = new TextInputBuilder()
     .setCustomId('model_id')
-    .setLabel('Vercel AI Gateway model id')
+    .setLabel('Model id')
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setMaxLength(120)
-    .setPlaceholder(modelIds[role]);
+    .setPlaceholder(modelIds[role] || `${activeLlmProvider()}:model-id`);
   return new ModalBuilder()
     .setCustomId(`modelcustom:${userId}:${role}`)
     .setTitle(`Set ${modelRoleLabel(role)} model`)
@@ -1903,13 +1910,14 @@ function createCustomModelModal(userId: string, role: RuntimeModelRole): ModalBu
 
 function renderModelPickerPrompt(role: RuntimeModelRole, query: string, catalog: GatewayModelCatalog): string {
   const status = runtimeModelStatus().find((item) => item.role === role);
+  const label = modelCatalogProviderLabel(catalog.provider);
   return [
-    `Pick a Vercel AI Gateway model for \`${modelRoleLabel(role)}\`.`,
+    `Pick a ${label} model for \`${modelRoleLabel(role)}\`.`,
     `current=${status?.model ?? modelIds[role]}`,
     `default=${status?.defaultModel ?? 'unknown'}`,
-    `catalog=${catalog.source} page=${modelPickerPage(catalog).current}/${modelPickerPage(catalog).total} showing=${modelPickerShowing(catalog)} matches=${catalog.total}${query ? ` query=${query}` : ''}`,
+    `provider=${catalog.provider} catalog=${catalog.source} page=${modelPickerPage(catalog).current}/${modelPickerPage(catalog).total} showing=${modelPickerShowing(catalog)} matches=${catalog.total}${query ? ` query=${query}` : ''}`,
     ...(catalog.error ? [`catalogError=${truncateSelectText(catalog.error, 120)}`] : []),
-    'Use Prev/Next to page the Gateway catalog, or `Custom model id...` if the model is not listed.',
+    'Use Prev/Next to page the active provider catalog, or `Custom model id...` for a provider-prefixed id.',
   ].join('\n');
 }
 
@@ -1923,7 +1931,7 @@ function modelPickerOptions(role: RuntimeModelRole, catalog: GatewayModelCatalog
   options.push({
     label: 'Custom model id...',
     value: MODEL_PICKER_CUSTOM_VALUE,
-    description: 'Type any Vercel AI Gateway model id.',
+    description: 'Type any model id, including vercel:, zai:, or zai-coding:.',
   });
   options.push({
     label: 'Reset to .env default',
