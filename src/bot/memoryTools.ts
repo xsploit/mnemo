@@ -80,19 +80,25 @@ export function createMemorySearchTools(scope: MemoryToolScope): ToolSet {
         scan_limit: z.number().int().min(20).max(2000).default(500),
       }),
       execute: async ({ query, scope: searchScope, limit, scan_limit }) => {
-        const traces = await searchTurnTraces({
-          query,
-          subjectId: searchScope === 'channel' ? undefined : scope.subjectId,
-          channelId: searchScope === 'user' ? undefined : scope.channelId,
-          limit,
-          scanLimit: scan_limit,
-        });
+        const traces =
+          searchScope === 'both'
+            ? mergeTraceResults([
+                ...(await searchTurnTraces({ query, subjectId: scope.subjectId, limit, scanLimit: scan_limit })),
+                ...(await searchTurnTraces({ query, channelId: scope.channelId, limit, scanLimit: scan_limit })),
+              ], query).slice(0, limit)
+            : await searchTurnTraces({
+                query,
+                subjectId: searchScope === 'channel' ? undefined : scope.subjectId,
+                channelId: searchScope === 'user' ? undefined : scope.channelId,
+                limit,
+                scanLimit: scan_limit,
+              });
         return {
           source: 'turn_history',
           query,
           scope: searchScope,
           count: traces.length,
-          results: traces.map(formatTraceHit),
+          results: traces.map((trace) => formatTraceHit(trace, query)),
         };
       },
     }),
@@ -112,7 +118,7 @@ function formatMemoryHit(memory: ScoredMemory): Record<string, unknown> {
   };
 }
 
-function formatTraceHit(trace: TurnTraceRecord): Record<string, unknown> {
+function formatTraceHit(trace: TurnTraceRecord, query: string): Record<string, unknown> {
   return {
     id: trace.id,
     timestamp: trace.timestamp,
@@ -122,17 +128,17 @@ function formatTraceHit(trace: TurnTraceRecord): Record<string, unknown> {
     kind: trace.kind,
     prompt: clamp(trace.prompt, 1000),
     answer: clamp(trace.answer, 1000),
-    history: trace.history.slice(-8).map((item) => ({
+    history: (trace.history ?? []).slice(-8).map((item) => ({
       author: clamp(item.author, 120),
       content: clamp(item.content, 500),
     })),
-    retrieved: trace.retrieved.slice(0, 8).map((item) => ({
+    retrieved: (trace.retrieved ?? []).slice(0, 8).map((item) => ({
       id: item.id,
       kind: item.kind,
       createdAt: item.createdAt instanceof Date ? item.createdAt.toISOString() : String(item.createdAt),
       content: clamp(item.content, 500),
     })),
-    toolTrace: (trace.toolTrace ?? []).slice(0, 10).map((item) => ({
+    toolTrace: pickRelevantToolTrace(trace.toolTrace ?? [], searchTerms(query)).map((item) => ({
       phase: item.phase,
       step: item.step,
       toolName: item.toolName,
@@ -142,6 +148,61 @@ function formatTraceHit(trace: TurnTraceRecord): Record<string, unknown> {
       error: clampUnknown(item.error, 800),
     })),
   };
+}
+
+function mergeTraceResults(traces: TurnTraceRecord[], query: string): TurnTraceRecord[] {
+  const terms = searchTerms(query);
+  const byId = new Map<string, TurnTraceRecord>();
+  for (const trace of traces) byId.set(trace.id, trace);
+  return [...byId.values()].sort(
+    (left, right) => traceScore(right, terms) - traceScore(left, terms) || Date.parse(right.timestamp) - Date.parse(left.timestamp),
+  );
+}
+
+function pickRelevantToolTrace(toolTrace: NonNullable<TurnTraceRecord['toolTrace']>, terms: string[]): NonNullable<TurnTraceRecord['toolTrace']> {
+  if (toolTrace.length <= 10 || terms.length === 0) return toolTrace.slice(0, 10);
+  return [...toolTrace]
+    .map((item, index) => ({ item, index, score: toolTraceScore(item, terms) }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, 10)
+    .map((entry) => entry.item);
+}
+
+function toolTraceScore(item: NonNullable<TurnTraceRecord['toolTrace']>[number], terms: string[]): number {
+  const haystack = [
+    item.phase,
+    item.toolName,
+    item.toolCallId ?? '',
+    stringifyUnknown(item.input),
+    stringifyUnknown(item.output),
+    stringifyUnknown(item.error),
+  ]
+    .join('\n')
+    .toLowerCase();
+  return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
+}
+
+function traceScore(trace: TurnTraceRecord, terms: string[]): number {
+  if (terms.length === 0) return 0;
+  const haystack = [
+    trace.authorName,
+    trace.kind,
+    trace.prompt,
+    trace.answer,
+    ...(trace.history ?? []).flatMap((item) => [item.author, item.content]),
+    ...(trace.retrieved ?? []).map((item) => item.content),
+    ...(trace.toolTrace ?? []).flatMap((item) => [
+      item.phase,
+      item.toolName,
+      item.toolCallId ?? '',
+      stringifyUnknown(item.input),
+      stringifyUnknown(item.output),
+      stringifyUnknown(item.error),
+    ]),
+  ]
+    .join('\n')
+    .toLowerCase();
+  return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
 }
 
 function mergeScored(memories: ScoredMemory[]): ScoredMemory[] {

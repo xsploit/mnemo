@@ -6,6 +6,11 @@ import type { HistoryTurn } from './respond.js';
 import type { PersonaAffect } from '../llm/personaOutput.js';
 
 const TRACE_PATH = path.resolve('data', 'turn-traces.jsonl');
+const TRACE_MAX_RECORDS = envInt('TURN_TRACE_MAX_RECORDS', 5000, 100, 100_000);
+const TRACE_MAX_BYTES = envInt('TURN_TRACE_MAX_BYTES', 25 * 1024 * 1024, 1024 * 1024, 500 * 1024 * 1024);
+const TRACE_PRUNE_INTERVAL = envInt('TURN_TRACE_PRUNE_INTERVAL', 25, 1, 10_000);
+let traceWritesSincePrune = 0;
+let tracePruneInFlight: Promise<void> | null = null;
 
 export interface ToolTraceEntry {
   phase: string;
@@ -68,6 +73,7 @@ export async function appendTurnTrace(input: TurnTraceInput): Promise<TurnTraceR
   };
   await fs.mkdir(path.dirname(TRACE_PATH), { recursive: true });
   await fs.appendFile(TRACE_PATH, `${JSON.stringify(record)}\n`, 'utf8');
+  await maybePruneTurnTraces();
   return record;
 }
 
@@ -138,8 +144,8 @@ function traceSearchScore(trace: TurnTraceRecord, terms: string[]): number {
     trace.kind,
     trace.prompt,
     trace.answer,
-    ...trace.history.flatMap((item) => [item.author, item.content]),
-    ...trace.retrieved.map((item) => item.content),
+    ...(trace.history ?? []).flatMap((item) => [item.author, item.content]),
+    ...(trace.retrieved ?? []).map((item) => item.content),
     ...(trace.toolTrace ?? []).flatMap((item) => [
       item.phase,
       item.toolName,
@@ -221,4 +227,50 @@ function searchTerms(query: string): string[] {
     'you',
   ]);
   return [...new Set(query.toLowerCase().match(/[a-z0-9_'-]{3,}/g) ?? [])].filter((term) => !stop.has(term));
+}
+
+async function maybePruneTurnTraces(): Promise<void> {
+  traceWritesSincePrune += 1;
+  let shouldPrune = traceWritesSincePrune >= TRACE_PRUNE_INTERVAL;
+  if (!shouldPrune) {
+    try {
+      shouldPrune = (await fs.stat(TRACE_PATH)).size > TRACE_MAX_BYTES;
+    } catch {
+      shouldPrune = false;
+    }
+  }
+  if (!shouldPrune) return;
+  traceWritesSincePrune = 0;
+  if (!tracePruneInFlight) {
+    tracePruneInFlight = pruneTurnTraces().finally(() => {
+      tracePruneInFlight = null;
+    });
+  }
+  await tracePruneInFlight;
+}
+
+async function pruneTurnTraces(): Promise<void> {
+  let text: string;
+  try {
+    text = await fs.readFile(TRACE_PATH, 'utf8');
+  } catch {
+    return;
+  }
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  let kept = lines.slice(-TRACE_MAX_RECORDS);
+  while (kept.length > 1 && Buffer.byteLength(`${kept.join('\n')}\n`, 'utf8') > TRACE_MAX_BYTES) {
+    kept = kept.slice(1);
+  }
+  if (kept.length === lines.length) return;
+  const tmp = `${TRACE_PATH}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, kept.length ? `${kept.join('\n')}\n` : '', 'utf8');
+  await fs.rename(tmp, TRACE_PATH);
+}
+
+function envInt(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
 }

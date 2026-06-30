@@ -22,6 +22,7 @@ import { applyMoodPresence } from '../cognition/mood.js';
 import { ttsPolicy } from './ttsPolicy.js';
 import { buildDiscordVoiceClip, fishTtsConfigured, sendDiscordVoiceMessage } from '../voice/fishTts.js';
 import { buildTaggedFishSpeechText } from '../voice/fishSpeechTags.js';
+import { appendTurnTrace } from './turnTrace.js';
 
 const log = logger('bot');
 
@@ -75,7 +76,10 @@ export function createClient(): Client {
   client.on(Events.MessageCreate, async (msg: Message) => {
     if (!client.user) return;
     if (msg.author.id === client.user.id) return;
-    if (msg.author.bot && !getRespondToBots()) return;
+    if (msg.author.bot) {
+      await recordPassiveBotContext(msg);
+      if (!getRespondToBots()) return;
+    }
 
     const isDM = !msg.guild;
     const mentioned = msg.mentions.has(client.user.id);
@@ -124,6 +128,58 @@ export function createClient(): Client {
   });
 
   return client;
+}
+
+async function recordPassiveBotContext(msg: Message): Promise<void> {
+  const text = passiveBotContextText(msg);
+  if (!text) return;
+  try {
+    await appendTurnTrace({
+      subjectId: msg.author.id,
+      channelId: msg.channelId,
+      messageId: msg.id,
+      authorName: `${msg.author.displayName ?? msg.author.username} (bot)`,
+      kind: 'passive-bot-context',
+      prompt: text,
+      answer: '',
+      model: 'discord-passive-context',
+      systemChars: 0,
+      promptChars: text.length,
+      history: [],
+      retrieved: [],
+      affect: null,
+      toolTrace: [],
+    });
+  } catch (e: any) {
+    log.warn('passive bot context skipped', e?.message ?? e);
+  }
+}
+
+function passiveBotContextText(msg: Message): string {
+  return [msg.cleanContent || msg.content, attachmentSummaryForHistory(msg), embedSummaryForHistory(msg)]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+}
+
+function embedSummaryForHistory(msg: Message): string {
+  if (msg.embeds.length === 0) return '';
+  const summaries = msg.embeds.slice(0, 5).map((embed, index) => {
+    const data = embed.toJSON() as {
+      title?: string;
+      description?: string;
+      url?: string;
+      author?: { name?: string };
+      footer?: { text?: string };
+      fields?: { name?: string; value?: string }[];
+    };
+    const fields = (data.fields ?? []).slice(0, 5).flatMap((field) => [field.name, field.value]);
+    const parts = [data.author?.name, data.title, data.description, ...fields, data.footer?.text, data.url]
+      .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+      .map((part) => part.replace(/\s+/g, ' ').trim());
+    return `embed ${index + 1}: ${parts.join(' | ')}`;
+  });
+  return `[embeds: ${summaries.join('; ')}]`;
 }
 
 async function fetchHistory(channel: TextBasedChannel, n: number, excludeId: string): Promise<HistoryTurn[]> {
