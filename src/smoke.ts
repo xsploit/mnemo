@@ -1,6 +1,7 @@
-import { generateText, embed } from 'ai';
+import { generateText } from 'ai';
 import { models, gatewayProviderOptions } from './llm/gateway.js';
 import { config } from './config.js';
+import { embedOne } from './llm/embeddings.js';
 
 /** One-shot connectivity check: validates the gateway key, base URL, and model ids. */
 async function main() {
@@ -25,7 +26,7 @@ async function main() {
   }
 
   try {
-    const { embedding } = await embed({ model: models.embed, value: 'hello world' });
+    const embedding = await embedOne('hello world');
     console.log(`✅ embed  → ${embedding.length} dims`);
   } catch (e: any) {
     console.log('❌ embed  →', e?.message ?? e);
