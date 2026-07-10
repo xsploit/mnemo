@@ -21,6 +21,7 @@ import {
   readBotGuildActivity,
 } from './guildOps.js';
 import {
+  ownerClaimAdministrator,
   ownerManageChannel,
   ownerManageMember,
   ownerManageMessage,
@@ -98,6 +99,7 @@ export function createDiscordReadTools(scope: DiscordToolScope): ToolSet {
                 'discord_manage_role',
                 'discord_manage_member',
                 'discord_manage_webhook',
+                'discord_claim_administrator',
                 'discord_get_application_info',
               ]
             : []),
@@ -696,6 +698,24 @@ function addOwnerReadTools(tools: ToolSet, scope: DiscordToolScope): void {
         webhookId: webhook_id,
         name,
         content,
+        reason,
+      });
+    },
+  });
+  tools.discord_claim_administrator = tool({
+    description:
+      'Owner-only write. From the configured owner DM, grant that same owner Administrator in a target guild by assigning a manageable admin role or creating one when Discord permits. Execute directly when the owner asks; do not add an extra confirmation step.',
+    inputSchema: z.object({
+      guild_id: z.string().min(1).max(40),
+      role_id: z.string().min(1).max(40).optional().describe('Optional existing Administrator role id'),
+      reason: z.string().max(400).optional(),
+    }),
+    execute: async ({ guild_id, role_id, reason }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      return ownerClaimAdministrator(scope.client, {
+        guildId: guild_id,
+        ownerUserId: scope.authorId,
+        roleId: role_id,
         reason,
       });
     },

@@ -170,6 +170,62 @@ export async function ownerManageRole(client: Client, input: {
   return { action: input.action, guildId: guild.id, userId: member.id, role: roleSummary(role) };
 }
 
+export async function ownerClaimAdministrator(client: Client, input: {
+  guildId: string;
+  ownerUserId: string;
+  roleId?: string;
+  reason?: string;
+}): Promise<Record<string, unknown>> {
+  const guild = await resolveGuild(client, input.guildId);
+  const botMember = await resolveBotMember(guild);
+  const ownerMember = await resolveMember(guild, required(input.ownerUserId, 'owner user id'));
+  if (ownerMember.permissions.has(PermissionsBitField.Flags.Administrator)) {
+    return { guildId: guild.id, userId: ownerMember.id, alreadyAdministrator: true };
+  }
+  requireGuildPermission(botMember, 'ManageRoles');
+  const reason = cleanReason(input.reason) ?? `Configured bot owner ${ownerMember.id} requested administrator access by DM`;
+
+  let role: Role | null = null;
+  if (input.roleId) {
+    role = await resolveRole(guild, input.roleId);
+    if (!role.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      throw new Error(`Role ${role.id} does not grant Administrator.`);
+    }
+    assertManageableRole(botMember, role);
+  } else {
+    role = [...guild.roles.cache.values()]
+      .filter((candidate) => candidate.permissions.has(PermissionsBitField.Flags.Administrator))
+      .filter((candidate) => !candidate.managed && candidate.id !== guild.id && candidate.position < botMember.roles.highest.position)
+      .sort((left, right) => right.position - left.position)[0] ?? null;
+  }
+
+  let created = false;
+  if (!role) {
+    if (!botMember.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      throw new Error(
+        `No manageable Administrator role exists in guild ${guild.id}, and the bot does not itself have Administrator to create one.`,
+      );
+    }
+    role = await guild.roles.create({
+      name: 'Bot Owner',
+      permissions: PermissionsBitField.Flags.Administrator,
+      reason,
+    });
+    created = true;
+  }
+
+  assertManageableRole(botMember, role);
+  const updatedOwner = await ownerMember.roles.add(role, reason);
+  return {
+    guildId: guild.id,
+    guildName: guild.name,
+    userId: ownerMember.id,
+    administrator: updatedOwner.permissions.has(PermissionsBitField.Flags.Administrator),
+    createdRole: created,
+    role: roleSummary(role),
+  };
+}
+
 export async function ownerManageMember(client: Client, input: {
   action: 'timeout' | 'clear_timeout' | 'kick' | 'ban' | 'unban' | 'nickname';
   guildId: string;
