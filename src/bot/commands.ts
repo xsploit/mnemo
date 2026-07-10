@@ -2384,7 +2384,7 @@ async function renderDevelopmentView(subjectId: string, view: string): Promise<s
       `predictionPrecision=${formatObservedRate(metrics.predictionPrecision)} resolved=${metrics.predictionResolutions}/${metrics.predictionsMade} coverage=${formatObservedRate(metrics.predictionCoverage)}`,
       `predictionBrier=${formatObservedNumber(metrics.predictionBrier)} (lower is better)`,
       `utilityUpdates=${metrics.utilityUpdates}`,
-      `shadowRetrievals=${metrics.shadowRetrievals} accepted=${formatObservedRate(metrics.shadowAcceptedRate)} meanLatencyMs=${formatObservedNumber(metrics.shadowMeanLatencyMs)} meanJaccard=${formatObservedNumber(metrics.shadowMeanJaccard)}`,
+      `shadowRetrievals=${metrics.shadowRetrievals} accepted=${formatObservedRate(metrics.shadowAcceptedRate)} meanLatencyMs=${formatObservedNumber(metrics.shadowMeanLatencyMs)} meanJaccard=${formatObservedNumber(metrics.shadowMeanJaccard)} meanRankAgreement=${formatObservedNumber(metrics.shadowMeanRankAgreement)}`,
     ].join('\n');
   }
 
@@ -2394,7 +2394,7 @@ async function renderDevelopmentView(subjectId: string, view: string): Promise<s
     `development=${config.development.enabled ? 'enabled' : 'disabled'}`,
     `cognitivePrepass=${config.development.cognitivePrepass ? config.development.cognitiveMode : 'disabled'} sampleRate=${config.development.cognitiveSampleRate} timeoutMs=${config.development.cognitiveTimeoutMs}`,
     `embeddings=${config.embed.provider}:${config.embed.localModel}`,
-    `shadow=${config.development.shadowProvider}`,
+    `shadow=${config.development.shadowProvider} topK=${config.development.shadowRetrievalLimit}`,
     `utility=alpha:${config.development.utilityAlpha} weight:${effectivePolicy.utilityWeight} relevanceGate:${config.development.utilityMinRelevance}`,
     `maxPredictions=${effectivePolicy.maxPredictions}`,
     `selfPromotion=evidence:${config.development.selfDeltaMinEvidence} cycles:${config.development.selfDeltaMinCycles}`,

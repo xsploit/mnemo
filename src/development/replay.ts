@@ -8,6 +8,7 @@ import { AffinityStore } from '../cognition/affinity.js';
 import { meetsSelfDeltaThreshold } from '../cognition/selfReflect.js';
 import { activityVersion, clearDirty, dueForDreaming, noteActivity } from '../worker/activity.js';
 import { FileMemoryPrivacyStore } from '../memory/privacy.js';
+import { rankedAgreement } from './shadow.js';
 import type { ScoredMemory } from '../memory/types.js';
 import { DevelopmentEventStore, utilityKey } from './eventStore.js';
 import { classifyFollowup, rewardForSignal } from './outcomes.js';
@@ -119,6 +120,10 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
   assert.equal(reranked.find((memory) => memory.id === 'low')?.score, low.score);
   assert.deepEqual(selectCreditEligibleMemoryIds([low, high], 0.2), ['high']);
   checks.utilityRelevanceGate = true;
+  assert.equal(rankedAgreement(['a', 'b', 'c'], ['a', 'b', 'c']), 1);
+  assert.ok(rankedAgreement(['a', 'b', 'c'], ['c', 'b', 'a']) < 1);
+  assert.ok(rankedAgreement(['a', 'b', 'c'], ['a']) < 1);
+  checks.shadowRankingMetric = true;
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hikari-development-replay-'));
   try {

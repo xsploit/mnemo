@@ -25,6 +25,7 @@ export interface ObservedDevelopmentMetrics {
   shadowAcceptedRate: number | null;
   shadowMeanLatencyMs: number | null;
   shadowMeanJaccard: number | null;
+  shadowMeanRankAgreement: number | null;
 }
 
 export async function computeObservedDevelopmentMetrics(
@@ -43,6 +44,11 @@ export async function computeObservedDevelopmentMetrics(
   const shadowRetrievals = events.flatMap((event) => (isShadowRetrieval(event.data) ? [event.data] : []));
   const shadowJaccards = shadowRetrievals.flatMap((result) => {
     const match = /\bjaccard=([0-9.]+)/i.exec(result.detail);
+    const value = match ? Number(match[1]) : Number.NaN;
+    return Number.isFinite(value) ? [value] : [];
+  });
+  const shadowRankAgreements = shadowRetrievals.flatMap((result) => {
+    const match = /\brankAgreement=([0-9.]+)/i.exec(result.detail);
     const value = match ? Number(match[1]) : Number.NaN;
     return Number.isFinite(value) ? [value] : [];
   });
@@ -96,6 +102,7 @@ export async function computeObservedDevelopmentMetrics(
     shadowAcceptedRate: ratio(shadowRetrievals.filter((result) => result.accepted).length, shadowRetrievals.length),
     shadowMeanLatencyMs: shadowRetrievals.length ? mean(shadowRetrievals.map((result) => result.latencyMs)) : null,
     shadowMeanJaccard: shadowJaccards.length ? mean(shadowJaccards) : null,
+    shadowMeanRankAgreement: shadowRankAgreements.length ? mean(shadowRankAgreements) : null,
   };
 }
 

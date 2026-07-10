@@ -81,10 +81,11 @@ class LocalDiversityShadowAdapter implements ShadowMemoryAdapter {
     const liveIds = input.candidates.slice(0, input.limit).map((candidate) => candidate.id);
     const overlap = intersectionSize(new Set(liveIds), new Set(itemIds));
     const denominator = new Set([...liveIds, ...itemIds]).size;
+    const rankAgreement = rankedAgreement(liveIds, itemIds);
     return {
       accepted: true,
       itemIds,
-      detail: `local lexical/diversity rerank; live overlap=${overlap}/${denominator || 1} jaccard=${(overlap / Math.max(1, denominator)).toFixed(3)}`,
+      detail: `local lexical/diversity rerank; live overlap=${overlap}/${denominator || 1} jaccard=${(overlap / Math.max(1, denominator)).toFixed(3)} rankAgreement=${rankAgreement.toFixed(3)}`,
     };
   }
 }
@@ -232,4 +233,15 @@ function intersectionSize(left: Set<string>, right: Set<string>): number {
   let count = 0;
   for (const value of left) if (right.has(value)) count += 1;
   return count;
+}
+
+export function rankedAgreement(liveIds: string[], shadowIds: string[]): number {
+  if (liveIds.length === 0 && shadowIds.length === 0) return 1;
+  const size = Math.max(liveIds.length, shadowIds.length, 1);
+  const shadowPositions = new Map(shadowIds.map((id, index) => [id, index]));
+  const displacement = liveIds.reduce(
+    (sum, id, liveIndex) => sum + Math.abs(liveIndex - (shadowPositions.get(id) ?? size)),
+    0,
+  );
+  return Math.max(0, Math.min(1, 1 - displacement / (size * size)));
 }

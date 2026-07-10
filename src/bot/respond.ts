@@ -114,7 +114,7 @@ async function retrieveConversationMemories(args: {
       content: memory.content,
       score: memory.score,
     })),
-    limit: TOTAL_MEMORY_LIMIT,
+    limit: config.development.shadowRetrievalLimit,
   }).catch((error: any) => log.warn('shadow retrieval skipped', error?.message ?? error));
   return ranked;
 }

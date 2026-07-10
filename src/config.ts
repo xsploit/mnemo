@@ -286,6 +286,7 @@ export const config = {
     policyLabEnabled: bool('DEVELOPMENT_POLICY_LAB', true),
     /** No external service by default. Letta and other adapters are explicit opt-ins later. */
     shadowProvider: opt('DEVELOPMENT_SHADOW_PROVIDER', 'local-diversity').toLowerCase(),
+    shadowRetrievalLimit: Math.max(1, Math.min(24, num('DEVELOPMENT_SHADOW_RETRIEVAL_LIMIT', 8))),
   },
   db: {
     url: opt('DATABASE_URL') || undefined,
