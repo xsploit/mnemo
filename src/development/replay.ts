@@ -8,6 +8,7 @@ import { AffinityStore } from '../cognition/affinity.js';
 import { meetsSelfDeltaThreshold } from '../cognition/selfReflect.js';
 import { activityVersion, clearDirty, dueForDreaming, noteActivity } from '../worker/activity.js';
 import { FileMemoryPrivacyStore } from '../memory/privacy.js';
+import { FileMemoryStore } from '../memory/store-file.js';
 import { rankedAgreement } from './shadow.js';
 import type { ScoredMemory } from '../memory/types.js';
 import { DevelopmentEventStore, utilityKey } from './eventStore.js';
@@ -303,6 +304,11 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
     await assert.rejects(() => brokenPrivacy.isOptedOut('privacy-user-1'));
     await assert.rejects(() => brokenPrivacy.isOptedOut('privacy-user-1'));
     checks.privacyLoadFailsClosed = true;
+    const brokenMemoryPath = path.join(tempRoot, 'broken-memories.json');
+    await fs.writeFile(brokenMemoryPath, '{not valid json', 'utf8');
+    await assert.rejects(() => new FileMemoryStore(brokenMemoryPath).ready());
+    assert.equal(await fs.readFile(brokenMemoryPath, 'utf8'), '{not valid json');
+    checks.memoryStoreLoadFailsClosed = true;
 
     assert.equal(meetsSelfDeltaThreshold(['a', 'b', 'c'], ['cycle-1'], 3, 2), false);
     assert.equal(meetsSelfDeltaThreshold(['a', 'b'], ['cycle-1', 'cycle-2'], 3, 2), false);

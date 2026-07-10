@@ -24,6 +24,7 @@ export class FileMemoryStore implements MemoryStore {
   private rows = new Map<string, MemoryRecord>();
   private dirty = false;
   private flushTimer: NodeJS.Timeout | null = null;
+  private flushInFlight: Promise<void> | null = null;
 
   constructor(private readonly path = 'data/memories.json') {}
 
@@ -42,8 +43,11 @@ export class FileMemoryStore implements MemoryStore {
       }
       log.info(`loaded ${this.rows.size} memories from ${this.path}`);
     } catch (e: any) {
-      if (e?.code !== 'ENOENT') log.warn(`could not load ${this.path}`, e?.message);
-      else log.info(`no existing store at ${this.path}; starting fresh`);
+      if (e?.code === 'ENOENT') log.info(`no existing store at ${this.path}; starting fresh`);
+      else {
+        log.error(`refusing to start with unreadable memory store ${this.path}`, e?.message);
+        throw e;
+      }
     }
     // Periodic flush so a crash loses at most a few seconds of memory.
     this.flushTimer = setInterval(() => void this.flush(), 5_000);
@@ -51,19 +55,31 @@ export class FileMemoryStore implements MemoryStore {
   }
 
   private async flush(): Promise<void> {
+    if (this.flushInFlight) {
+      await this.flushInFlight;
+      if (this.dirty) return this.flush();
+      return;
+    }
     if (!this.dirty) return;
     this.dirty = false;
-    try {
+    const snapshot = JSON.stringify([...this.rows.values()], null, 0);
+    const operation = (async () => {
       await mkdir(dirname(this.path), { recursive: true });
       // Atomic write: a crash/kill mid-write can only ever leave the .tmp file
       // corrupt, never the real store — this is the sole source of truth for
       // every memory Hikari has, flushed every 5s while active.
-      const tmp = `${this.path}.tmp`;
-      await writeFile(tmp, JSON.stringify([...this.rows.values()], null, 0));
+      const tmp = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
+      await writeFile(tmp, snapshot);
       await rename(tmp, this.path);
+    })();
+    this.flushInFlight = operation;
+    try {
+      await operation;
     } catch (e: any) {
       log.error('flush failed', e?.message);
       this.dirty = true;
+    } finally {
+      if (this.flushInFlight === operation) this.flushInFlight = null;
     }
   }
 
