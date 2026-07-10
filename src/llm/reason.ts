@@ -78,6 +78,7 @@ export async function reasonedObject<T>(args: {
   prompt: string;
   temperature?: number;
   maxOutputTokens?: number;
+  abortSignal?: AbortSignal;
 }): Promise<{ object: T; reasoning: string }> {
   const jsonSchema = JSON.stringify(zodToJsonSchema(args.schema, { target: 'openApi3' }));
   const baseSystem = [
@@ -101,6 +102,7 @@ export async function reasonedObject<T>(args: {
       temperature: args.temperature ?? 0.4,
       maxOutputTokens: args.maxOutputTokens ?? 4096,
       providerOptions: gatewayProviderOptions,
+      abortSignal: args.abortSignal,
     });
     const raw = extractJsonObject(res.text);
     if (raw) {

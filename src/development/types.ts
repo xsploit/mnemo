@@ -105,7 +105,7 @@ export interface CognitiveState {
   predictions: SocialPrediction[];
   memoryIds: string[];
   evidenceIds: string[];
-  compiler: 'model' | 'fallback';
+  compiler: 'model' | 'deterministic' | 'fallback';
 }
 
 export interface CognitiveStateEventData {

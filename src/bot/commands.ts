@@ -1217,7 +1217,7 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
           `textAttachmentMaxChars=${config.bot.textAttachmentMaxChars}`,
           `pdfAttachmentMaxPages=${config.bot.pdfAttachmentMaxPages}`,
           `webSearch=${tavilyToolsAvailable() ? 'enabled' : 'disabled'}`,
-          `development=${config.development.enabled ? 'enabled' : 'disabled'} cognitivePrepass=${config.development.cognitivePrepass ? 'enabled' : 'disabled'} maxPredictions=${config.development.maxPredictions} events=${developmentEvents}`,
+          `development=${config.development.enabled ? 'enabled' : 'disabled'} cognitivePrepass=${config.development.cognitivePrepass ? config.development.cognitiveMode : 'disabled'} cognitiveTimeoutMs=${config.development.cognitiveTimeoutMs} maxPredictions=${config.development.maxPredictions} events=${developmentEvents}`,
           `shitlist=${shitlistCount}`,
           `memoryPausedForYou=${memoryPaused ? 'yes' : 'no'}`,
           `memory=${stats.episodic} episodic · ${stats.semantic} facts · ${stats.reflection} insights · ${stats.diary} dreams`,
@@ -2389,7 +2389,7 @@ async function renderDevelopmentView(subjectId: string, view: string): Promise<s
   for (const event of events) counts.set(event.kind, (counts.get(event.kind) ?? 0) + 1);
   return [
     `development=${config.development.enabled ? 'enabled' : 'disabled'}`,
-    `cognitivePrepass=${config.development.cognitivePrepass ? 'enabled' : 'disabled'}`,
+    `cognitivePrepass=${config.development.cognitivePrepass ? config.development.cognitiveMode : 'disabled'} sampleRate=${config.development.cognitiveSampleRate} timeoutMs=${config.development.cognitiveTimeoutMs}`,
     `embeddings=${config.embed.provider}:${config.embed.localModel}`,
     `shadow=${config.development.shadowProvider}`,
     `utility=alpha:${config.development.utilityAlpha} weight:${effectivePolicy.utilityWeight} relevanceGate:${config.development.utilityMinRelevance}`,

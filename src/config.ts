@@ -259,6 +259,13 @@ export const config = {
     enabled: bool('DEVELOPMENT_ENABLED', true),
     /** Structured replacement for the older free-form inner-voice pass. */
     cognitivePrepass: bool('DEVELOPMENT_COGNITIVE_PREPASS', bool('INNER_VOICE', true)),
+    /** Adaptive uses the model only for socially complex turns plus a stable sample. */
+    cognitiveMode: (() => {
+      const value = opt('DEVELOPMENT_COGNITIVE_MODE', 'adaptive').toLowerCase();
+      return value === 'always' || value === 'deterministic' ? value : 'adaptive';
+    })() as 'adaptive' | 'always' | 'deterministic',
+    cognitiveSampleRate: Math.max(0, Math.min(1, num('DEVELOPMENT_COGNITIVE_SAMPLE_RATE', 0.05))),
+    cognitiveTimeoutMs: Math.max(500, Math.min(30_000, num('DEVELOPMENT_COGNITIVE_TIMEOUT_MS', 2500))),
     /** A later message/reaction may resolve the latest response inside this window. */
     outcomeWindowHours: Math.max(1, num('DEVELOPMENT_OUTCOME_WINDOW_HOURS', 24)),
     /** Unreferenced follow-ups only attach implicitly for a short conversational window. */

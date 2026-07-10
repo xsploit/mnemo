@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { z } from 'zod';
 import type { HistoryTurn } from '../bot/respond.js';
 import type { AffinityView } from '../cognition/affinity.js';
+import { config } from '../config.js';
 import { models } from '../llm/gateway.js';
 import type { PersonaAffect } from '../llm/personaOutput.js';
 import { reasonedObject } from '../llm/reason.js';
@@ -105,9 +106,13 @@ export async function compileCognitiveState(args: CompileCognitiveStateArgs): Pr
     ...args.memories.map((memory) => `memory:${memory.id}`),
   ]);
 
+  const useModel = shouldUseModelCompiler(args);
   let state: CognitiveState;
-  try {
-    const context = {
+  if (!useModel) {
+    state = fallbackState(args, currentEvidenceId, policy.maxPredictions, 'deterministic');
+  } else {
+    try {
+      const context = {
       current: {
         evidenceId: currentEvidenceId,
         user: args.userName,
@@ -137,7 +142,7 @@ export async function compileCognitiveState(args: CompileCognitiveStateArgs): Pr
       priorAffect: args.momentum ?? null,
     };
 
-    const { object } = await reasonedObject({
+      const { object } = await reasonedObject({
       model: models.json,
       schema: cognitiveSchema,
       system: `You are Hikari's structured cognitive compiler. Produce a compact, inspectable mental-state hypothesis for one Discord reply.
@@ -156,9 +161,10 @@ Choose a response intention that preserves Hikari's configured personality while
       prompt: `Compile this evidence packet:\n${JSON.stringify(context)}`,
       temperature: 0.25,
       maxOutputTokens: 1500,
+      abortSignal: AbortSignal.timeout(config.development.cognitiveTimeoutMs),
     });
 
-    state = {
+      state = {
       subjectId: args.subjectId,
       channelId: args.channelId,
       messageId: args.messageId,
@@ -181,10 +187,11 @@ Choose a response intention that preserves Hikari's configured personality while
       memoryIds: args.memories.map((memory) => memory.id),
       evidenceIds: [...knownEvidence].filter((id) => !id.startsWith('ephemeral-history:')),
       compiler: 'model',
-    };
-  } catch (error: any) {
-    log.warn('model compiler failed; using deterministic state', error?.message ?? error);
-    state = fallbackState(args, currentEvidenceId, policy.maxPredictions);
+      };
+    } catch (error: any) {
+      log.warn('model compiler failed; using deterministic state', error?.message ?? error);
+      state = fallbackState(args, currentEvidenceId, policy.maxPredictions, 'fallback');
+    }
   }
 
   if (!args.persist) return { state, eventId: null };
@@ -216,10 +223,17 @@ export function renderCognitiveState(state: CognitiveState): string {
   ].join('\n');
 }
 
-function fallbackState(args: CompileCognitiveStateArgs, evidenceId: string, maxPredictions: number): CognitiveState {
+function fallbackState(
+  args: CompileCognitiveStateArgs,
+  evidenceId: string,
+  maxPredictions: number,
+  compiler: 'deterministic' | 'fallback',
+): CognitiveState {
   const question = /\?\s*$/.test(args.message) || /\b(what|why|how|when|where|who|can|could|should|do|did|is|are)\b/i.test(args.message);
   const correction = /\b(no[, ]|wrong|actually|not what i|you forgot|you missed|that's not|that is not)\b/i.test(args.message);
   const positive = /\b(thanks|thank you|exactly|that's right|love it|nice|good job)\b/i.test(args.message);
+  const relationshipQuery =
+    /\b(how do you feel|what do you think of me|do you trust|are we friends|our relationship|between us|do you like me)\b/i.test(args.message);
   const signal: SocialSignal = correction ? 'correction' : question ? 'follow_up_question' : 'topic_continuation';
   return {
     subjectId: args.subjectId,
@@ -227,8 +241,12 @@ function fallbackState(args: CompileCognitiveStateArgs, evidenceId: string, maxP
     messageId: args.messageId,
     scene: {
       topic: clamp(args.message.replace(/\s+/g, ' ').trim(), 120) || 'ongoing conversation',
-      tone: correction ? 'corrective' : positive ? 'positive' : 'conversational',
-      socialContext: args.history.length ? 'continuing a shared Discord conversation' : 'a new addressed turn',
+      tone: correction ? 'corrective' : relationshipQuery ? 'relational and reflective' : positive ? 'positive' : 'conversational',
+      socialContext: relationshipQuery
+        ? `the user is asking about the current ${args.affinity?.level ?? 'acquaintance'} relationship`
+        : args.history.length
+          ? 'continuing a shared Discord conversation'
+          : 'a new addressed turn',
     },
     appraisal: {
       novelty: args.history.length ? 0.35 : 0.65,
@@ -238,19 +256,39 @@ function fallbackState(args: CompileCognitiveStateArgs, evidenceId: string, maxP
       agency: 'user',
     },
     userModel: {
-      likelyIntent: correction ? 'correct a misunderstanding' : question ? 'get a direct response' : 'continue the conversation',
-      likelyAffect: correction ? 'dissatisfied or corrective' : positive ? 'positive' : 'uncertain',
-      likelyWant: correction ? 'acknowledgment and a corrected answer' : 'a relevant in-character reply',
-      confidence: 0.45,
+      likelyIntent: correction
+        ? 'correct a misunderstanding'
+        : relationshipQuery
+          ? 'understand Hikari’s current relationship stance'
+          : question
+            ? 'get a direct response'
+            : 'continue the conversation',
+      likelyAffect: correction
+        ? 'dissatisfied or corrective'
+        : relationshipQuery
+          ? 'curious or possibly seeking reassurance'
+          : positive
+            ? 'positive'
+            : 'uncertain',
+      likelyWant: correction
+        ? 'acknowledgment and a corrected answer'
+        : relationshipQuery
+          ? 'an honest answer grounded in the relationship evidence available'
+          : 'a relevant in-character reply',
+      confidence: relationshipQuery ? 0.6 : 0.45,
       evidenceIds: [evidenceId],
     },
     response: {
-      primaryGoal: correction ? 'acknowledge and correct the mistake' : 'answer the current message directly',
+      primaryGoal: correction
+        ? 'acknowledge and correct the mistake'
+        : relationshipQuery
+          ? 'answer honestly from observed relationship evidence without inventing feelings or history'
+          : 'answer the current message directly',
       secondaryGoals: ['preserve Hikari voice', 'avoid unsupported claims'],
-      directness: correction || question ? 0.9 : 0.7,
-      warmth: correction ? 0.45 : 0.65,
-      playfulness: correction ? 0.15 : 0.55,
-      depth: question ? 0.6 : 0.4,
+      directness: correction ? 0.9 : relationshipQuery ? 0.75 : question ? 0.9 : 0.7,
+      warmth: correction ? 0.45 : relationshipQuery ? (args.affinity?.warmthPercent ?? 60) / 100 : 0.65,
+      playfulness: correction ? 0.15 : relationshipQuery ? 0.25 : 0.55,
+      depth: relationshipQuery ? 0.75 : question ? 0.6 : 0.4,
     },
     relationshipDelta: {
       trustDelta: 0,
@@ -271,8 +309,23 @@ function fallbackState(args: CompileCognitiveStateArgs, evidenceId: string, maxP
     ].slice(0, maxPredictions),
     memoryIds: args.memories.map((memory) => memory.id),
     evidenceIds: [evidenceId, ...args.memories.map((memory) => `memory:${memory.id}`)],
-    compiler: 'fallback',
+    compiler,
   };
+}
+
+export function shouldUseModelCompiler(args: Pick<CompileCognitiveStateArgs, 'message' | 'messageId'>): boolean {
+  if (config.development.cognitiveMode === 'always') return true;
+  if (config.development.cognitiveMode === 'deterministic') return false;
+  const sociallyComplex =
+    args.message.length >= 500 ||
+    /\b(how do you feel|what do you think of me|do you trust|are we friends|our relationship|between us|you seem|you sound|why did you react|what did you mean|are you upset|are you mad|do you like me)\b/i.test(args.message);
+  if (sociallyComplex) return true;
+  return stableFraction(args.messageId) < config.development.cognitiveSampleRate;
+}
+
+function stableFraction(value: string): number {
+  const digest = crypto.createHash('sha256').update(value).digest();
+  return digest.readUInt32BE(0) / 0x1_0000_0000;
 }
 
 function normalizePrediction(

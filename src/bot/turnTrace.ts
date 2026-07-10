@@ -47,7 +47,7 @@ export interface TurnTraceInput {
   };
   development?: {
     cognitiveStateId: string | null;
-    compiler: 'model' | 'fallback';
+    compiler: 'model' | 'deterministic' | 'fallback';
     topic: string;
     primaryGoal: string;
     predictionCount: number;
