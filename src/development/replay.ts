@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import { AffinityStore } from '../cognition/affinity.js';
 import { meetsSelfDeltaThreshold } from '../cognition/selfReflect.js';
 import { activityVersion, clearDirty, dueForDreaming, noteActivity } from '../worker/activity.js';
+import { FileMemoryPrivacyStore } from '../memory/privacy.js';
 import type { ScoredMemory } from '../memory/types.js';
 import { DevelopmentEventStore, utilityKey } from './eventStore.js';
 import { classifyFollowup, rewardForSignal } from './outcomes.js';
@@ -257,6 +258,19 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
     assert.deepEqual(affinityEntries[0]?.evidenceKeys, ['outcome-evidence-1']);
     assert.ok((affinityEntries[0]?.valenceEma ?? 0) > 0);
     checks.relationshipEvidenceDedup = true;
+
+    const privacyPath = path.join(tempRoot, 'privacy.json');
+    const privacy = new FileMemoryPrivacyStore(privacyPath);
+    await Promise.all([
+      privacy.pause('privacy-user-1', 'owner', 'replay'),
+      privacy.pause('privacy-user-2', 'owner', 'replay'),
+    ]);
+    const reloadedPrivacy = new FileMemoryPrivacyStore(privacyPath);
+    assert.equal(await reloadedPrivacy.isOptedOut('privacy-user-1'), true);
+    assert.equal(await reloadedPrivacy.isOptedOut('privacy-user-2'), true);
+    await reloadedPrivacy.resume('privacy-user-1', 'owner', 'replay');
+    assert.equal(await reloadedPrivacy.isOptedOut('privacy-user-1'), false);
+    checks.privacyPersistence = true;
 
     assert.equal(meetsSelfDeltaThreshold(['a', 'b', 'c'], ['cycle-1'], 3, 2), false);
     assert.equal(meetsSelfDeltaThreshold(['a', 'b'], ['cycle-1', 'cycle-2'], 3, 2), false);

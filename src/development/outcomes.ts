@@ -1,6 +1,7 @@
 import { affinityStore } from '../cognition/affinity.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { memoryPrivacy } from '../memory/privacy.js';
 import { getDevelopmentStore } from './eventStore.js';
 import { recordUtilityUpdates } from './utility.js';
 import type {
@@ -67,6 +68,7 @@ export async function observeFollowupMessage(args: {
   const referenced = args.referencedMessageId ? await responseLinkByMessageId(args.referencedMessageId) : null;
   const link = referenced ?? (await latestEligibleResponse(args.channelId, createdAt, args.authorId));
   if (!link) return;
+  if (await outcomeMemoryPaused(link.subjectId, args.authorId)) return;
   const signal = classifyFollowup(args.content);
   await recordOutcome({
     link,
@@ -91,6 +93,7 @@ export async function observeReaction(args: {
   if (!config.development.enabled) return;
   const link = await responseLinkByMessageId(args.responseMessageId);
   if (!link) return;
+  if (await outcomeMemoryPaused(link.subjectId, args.authorId)) return;
   const signal: SocialSignal = POSITIVE_REACTIONS.has(args.emoji)
     ? 'reaction_positive'
     : NEGATIVE_REACTIONS.has(args.emoji)
@@ -315,4 +318,9 @@ function clamp(value: string, maxChars: number): string {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Number.isFinite(value) ? value : 0));
+}
+
+async function outcomeMemoryPaused(subjectId: string | undefined, actorId: string): Promise<boolean> {
+  if (await memoryPrivacy.isOptedOut(actorId)) return true;
+  return subjectId ? memoryPrivacy.isOptedOut(subjectId) : false;
 }

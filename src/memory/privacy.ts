@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 
 type PrivacyEntry = {
@@ -15,6 +16,8 @@ type PrivacyState = {
 
 export class FileMemoryPrivacyStore {
   private loaded = false;
+  private loadPromise: Promise<void> | null = null;
+  private mutationTail: Promise<void> = Promise.resolve();
   private state: PrivacyState = { schema: 'mnemo.memory-privacy.v1', subjects: {} };
 
   constructor(private readonly path = 'data/privacy.json') {}
@@ -30,30 +33,39 @@ export class FileMemoryPrivacyStore {
   }
 
   async pause(subjectId: string, actorId: string, reason: string): Promise<void> {
-    await this.load();
-    this.state.subjects[subjectId] = {
-      optedOut: true,
-      updatedAt: new Date().toISOString(),
-      actorId,
-      reason,
-    };
-    await this.save();
+    await this.mutate(() => {
+      this.state.subjects[subjectId] = {
+        optedOut: true,
+        updatedAt: new Date().toISOString(),
+        actorId,
+        reason,
+      };
+    });
   }
 
   async resume(subjectId: string, actorId: string, reason: string): Promise<void> {
-    await this.load();
-    this.state.subjects[subjectId] = {
-      optedOut: false,
-      updatedAt: new Date().toISOString(),
-      actorId,
-      reason,
-    };
-    await this.save();
+    await this.mutate(() => {
+      this.state.subjects[subjectId] = {
+        optedOut: false,
+        updatedAt: new Date().toISOString(),
+        actorId,
+        reason,
+      };
+    });
   }
 
   private async load(): Promise<void> {
     if (this.loaded) return;
-    this.loaded = true;
+    if (!this.loadPromise) {
+      this.loadPromise = this.loadFromDisk().finally(() => {
+        this.loaded = true;
+        this.loadPromise = null;
+      });
+    }
+    await this.loadPromise;
+  }
+
+  private async loadFromDisk(): Promise<void> {
     try {
       const parsed = JSON.parse(await readFile(this.path, 'utf8')) as Partial<PrivacyState>;
       this.state = {
@@ -67,7 +79,19 @@ export class FileMemoryPrivacyStore {
 
   private async save(): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true });
-    await writeFile(this.path, JSON.stringify(this.state, null, 2));
+    const temporary = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(temporary, JSON.stringify(this.state, null, 2));
+    await rename(temporary, this.path);
+  }
+
+  private async mutate(fn: () => void): Promise<void> {
+    const operation = this.mutationTail.then(async () => {
+      await this.load();
+      fn();
+      await this.save();
+    });
+    this.mutationTail = operation.catch(() => undefined);
+    return operation;
   }
 }
 

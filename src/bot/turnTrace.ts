@@ -11,6 +11,7 @@ const TRACE_MAX_BYTES = envInt('TURN_TRACE_MAX_BYTES', 25 * 1024 * 1024, 1024 * 
 const TRACE_PRUNE_INTERVAL = envInt('TURN_TRACE_PRUNE_INTERVAL', 25, 1, 10_000);
 let traceWritesSincePrune = 0;
 let tracePruneInFlight: Promise<void> | null = null;
+let traceWriteTail: Promise<void> = Promise.resolve();
 
 export interface ToolTraceEntry {
   phase: string;
@@ -111,9 +112,13 @@ export async function appendTurnTrace(input: TurnTraceInput): Promise<TurnTraceR
         }
       : undefined,
   };
-  await fs.mkdir(path.dirname(TRACE_PATH), { recursive: true });
-  await fs.appendFile(TRACE_PATH, `${JSON.stringify(record)}\n`, 'utf8');
-  await maybePruneTurnTraces();
+  const write = traceWriteTail.then(async () => {
+    await fs.mkdir(path.dirname(TRACE_PATH), { recursive: true });
+    await fs.appendFile(TRACE_PATH, `${JSON.stringify(record)}\n`, 'utf8');
+    await maybePruneTurnTraces();
+  });
+  traceWriteTail = write.catch(() => undefined);
+  await write;
   return record;
 }
 
