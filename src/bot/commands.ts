@@ -2564,7 +2564,7 @@ async function renderDevelopmentView(subjectId: string, view: string): Promise<s
       `predictionPrecision=${formatObservedRate(metrics.predictionPrecision)} resolved=${metrics.predictionResolutions}/${metrics.predictionsMade} coverage=${formatObservedRate(metrics.predictionCoverage)}`,
       `predictionBrier=${formatObservedNumber(metrics.predictionBrier)} (lower is better)`,
       `utilityUpdates=${metrics.utilityUpdates}`,
-      `shadowRetrievals=${metrics.shadowRetrievals} accepted=${formatObservedRate(metrics.shadowAcceptedRate)} meanLatencyMs=${formatObservedNumber(metrics.shadowMeanLatencyMs)} meanJaccard=${formatObservedNumber(metrics.shadowMeanJaccard)} meanRankAgreement=${formatObservedNumber(metrics.shadowMeanRankAgreement)}`,
+      `shadowProvider=${metrics.shadowProvider ?? 'none'} retrievals=${metrics.shadowRetrievals} accepted=${formatObservedRate(metrics.shadowAcceptedRate)} meanLatencyMs=${formatObservedNumber(metrics.shadowMeanLatencyMs)} meanJaccard=${formatObservedNumber(metrics.shadowMeanJaccard)} meanRankAgreement=${formatObservedNumber(metrics.shadowMeanRankAgreement)}`,
     ].join('\n');
   }
 

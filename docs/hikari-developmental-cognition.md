@@ -73,6 +73,8 @@ INGEST -> CONSOLIDATE -> REFLECT -> REHEARSE -> DREAM -> DEVELOP -> FORGET
 
 `DEVELOP` considers prediction outcomes, repeated appraisals, corrections, reactions, and utility updates. It may propose a self or relationship change, but promotion requires repeated independent evidence. A single dream, response, or generated affect cannot promote a durable change.
 
+Different subjects may sleep concurrently, while duplicate cycles for one subject are joined. The shared self-model evaluation/evolve step is serialized across subjects so two dreams cannot apply the same accepted trait edit at once.
+
 ## Utility Learning
 
 Retrieval stays two-stage:
@@ -80,7 +82,7 @@ Retrieval stays two-stage:
 1. semantic/temporal candidate generation using the current local embedding and continuity logic;
 2. small bounded reranking boost from observed utility.
 
-Utility is updated by an exponential moving average and scoped by target plus context. Positive evidence currently includes positive reactions and direct explicit confirmation. Negative evidence includes direct corrections and negative reactions. Neutral follow-ups and missing feedback do not update memory or strategy utility. Prediction utility is scored separately when a prediction matches or when a non-zero contradictory signal arrives.
+Utility is updated by an exponential moving average and scoped by target plus context. Positive evidence currently includes positive reactions and direct explicit confirmation. Negative evidence includes direct corrections and negative reactions. Neutral follow-ups and missing feedback do not update memory or strategy utility. Prediction utility is scored separately: a low-information neutral match gets small credit, a strong contradictory signal fails it immediately, and an unmatched neutral sequence fails it when its declared turn horizon expires.
 
 Utility never overrides a minimum semantic-relevance gate, so popular but irrelevant memories cannot dominate recall.
 
@@ -126,6 +128,8 @@ The deterministic replay suite verifies control-plane invariants:
 - prompt size and local latency
 
 It does not report synthetic persona or grounding quality as if they were real observations. `eval:development:observed` separately reports real follow-ups, reactions, corrections, continuation, prediction precision/calibration, and utility updates; missing samples remain `n/a`. Human A/B evaluation still owns character consistency, natural callbacks, emotional appropriateness, surprise, non-sycophancy, and overall "feels more real" preference.
+
+Shadow summary metrics are grouped to the latest active provider so old `local-baseline` identity results cannot inflate a later `local-diversity` comparison.
 
 ## Research Lineage
 

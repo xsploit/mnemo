@@ -14,8 +14,8 @@ import type { ScoredMemory } from '../memory/types.js';
 import { DevelopmentEventStore, utilityKey } from './eventStore.js';
 import {
   classifyFollowup,
+  predictionResolutionForObservation,
   rewardForSignal,
-  shouldResolvePrediction,
   shouldUpdateOutcomeUtility,
 } from './outcomes.js';
 import { decidePolicyCandidate, type ReplayMetrics } from './policyLab.js';
@@ -61,9 +61,46 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
   checks.outcomeRewards = true;
   assert.equal(shouldUpdateOutcomeUtility(0), false);
   assert.equal(shouldUpdateOutcomeUtility(0.85), true);
-  assert.equal(shouldResolvePrediction('positive_feedback', 'topic_continuation', 0), false);
-  assert.equal(shouldResolvePrediction('topic_continuation', 'topic_continuation', 0), true);
-  assert.equal(shouldResolvePrediction('positive_feedback', 'correction', -1), true);
+  assert.equal(
+    predictionResolutionForObservation({
+      predicted: 'positive_feedback',
+      observed: 'topic_continuation',
+      observedReward: 0,
+      turnDistance: 1,
+      horizonTurns: 2,
+    }),
+    null,
+  );
+  assert.deepEqual(
+    predictionResolutionForObservation({
+      predicted: 'topic_continuation',
+      observed: 'topic_continuation',
+      observedReward: 0,
+      turnDistance: 1,
+      horizonTurns: 2,
+    }),
+    { matched: true, reward: 0.25 },
+  );
+  assert.deepEqual(
+    predictionResolutionForObservation({
+      predicted: 'positive_feedback',
+      observed: 'topic_continuation',
+      observedReward: 0,
+      turnDistance: 2,
+      horizonTurns: 2,
+    }),
+    { matched: false, reward: -0.25 },
+  );
+  assert.deepEqual(
+    predictionResolutionForObservation({
+      predicted: 'positive_feedback',
+      observed: 'correction',
+      observedReward: -1,
+      turnDistance: 1,
+      horizonTurns: 2,
+    }),
+    { matched: false, reward: -0.25 },
+  );
   checks.signalBearingCredit = true;
 
   const history: HistoryTurn[] = [

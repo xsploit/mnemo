@@ -21,6 +21,7 @@ export interface ObservedDevelopmentMetrics {
   predictionPrecision: number | null;
   predictionBrier: number | null;
   utilityUpdates: number;
+  shadowProvider: string | null;
   shadowRetrievals: number;
   shadowAcceptedRate: number | null;
   shadowMeanLatencyMs: number | null;
@@ -43,7 +44,11 @@ export async function computeObservedDevelopmentMetrics(
   }
   const resolutions = [...resolutionByPrediction.values()];
   const utilityUpdates = events.filter((event) => isUtilityUpdate(event.data)).length;
-  const shadowRetrievals = events.flatMap((event) => (isShadowRetrieval(event.data) ? [event.data] : []));
+  const allShadowRetrievals = events.flatMap((event) => (isShadowRetrieval(event.data) ? [event.data] : []));
+  const shadowProvider = allShadowRetrievals.at(-1)?.provider ?? null;
+  const shadowRetrievals = shadowProvider
+    ? allShadowRetrievals.filter((result) => result.provider === shadowProvider)
+    : [];
   const shadowJaccards = shadowRetrievals.flatMap((result) => {
     if (typeof result.jaccard === 'number' && Number.isFinite(result.jaccard)) return [result.jaccard];
     const match = /\bjaccard=([0-9.]+)/i.exec(result.detail);
@@ -102,6 +107,7 @@ export async function computeObservedDevelopmentMetrics(
       : null,
     predictionBrier: brierTerms.length ? mean(brierTerms) : null,
     utilityUpdates,
+    shadowProvider,
     shadowRetrievals: shadowRetrievals.length,
     shadowAcceptedRate: ratio(shadowRetrievals.filter((result) => result.accepted).length, shadowRetrievals.length),
     shadowMeanLatencyMs: shadowRetrievals.length ? mean(shadowRetrievals.map((result) => result.latencyMs)) : null,
@@ -154,6 +160,7 @@ function isUtilityUpdate(value: unknown): value is UtilityUpdateEventData {
 
 function isShadowRetrieval(value: unknown): value is {
   operation: 'retrieve';
+  provider: string;
   accepted: boolean;
   latencyMs: number;
   detail: string;
@@ -163,6 +170,7 @@ function isShadowRetrieval(value: unknown): value is {
   return Boolean(
     isRecord(value) &&
       value.operation === 'retrieve' &&
+      typeof value.provider === 'string' &&
       typeof value.accepted === 'boolean' &&
       typeof value.latencyMs === 'number' &&
       typeof value.detail === 'string',

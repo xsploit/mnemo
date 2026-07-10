@@ -13,6 +13,7 @@ import type { MemoryRecord } from '../memory/types.js';
 import { selfModelStore, type SelfNoteEdit } from './selfModel.js';
 
 const log = logger('self-reflect');
+let selfEvaluationTail: Promise<unknown> = Promise.resolve();
 
 const candidateSchema = z.object({
   candidates: z
@@ -114,6 +115,12 @@ Rules:
 }
 
 async function evaluateCandidate(candidate: DevelopmentEvent<SelfDeltaCandidateEventData>): Promise<string | null> {
+  const operation = selfEvaluationTail.then(() => evaluateCandidateSerialized(candidate));
+  selfEvaluationTail = operation.catch(() => undefined);
+  return operation;
+}
+
+async function evaluateCandidateSerialized(candidate: DevelopmentEvent<SelfDeltaCandidateEventData>): Promise<string | null> {
   const store = getDevelopmentStore();
   const allCandidates = (await store.list({ kinds: ['self_delta_candidate'] }))
     .flatMap((event) =>

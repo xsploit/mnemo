@@ -9,6 +9,7 @@ import type {
   PolicyCandidateEventData,
   PolicyDecisionEventData,
   PredictionResolutionEventData,
+  ResponseLinkEventData,
   SocialOutcomeEventData,
 } from './types.js';
 
@@ -171,13 +172,20 @@ async function observedReplayMetrics(subjectId: string | undefined, maxPredictio
   }
   const resolutions = events
     .flatMap((event) => (isResolution(event.data) && selectedPredictionIds.has(event.data.predictionId) ? [event.data] : []));
-  const outcomes = events
+  const allOutcomes = events
     .flatMap((event) => (isOutcome(event.data) ? [event.data] : []))
     .filter((outcome) => outcome.attribution != null || outcome.source === 'reaction');
+  const outcomes = allOutcomes.filter((outcome) => outcome.targetAuthor);
+  const responseAuthors = new Map(
+    events.flatMap((event) => (isResponseLink(event.data) ? [[event.data.responseMessageId, event.data.authorId] as const] : [])),
+  );
+  const attributionChecks = allOutcomes.flatMap((outcome) => {
+    const expectedAuthor = responseAuthors.get(outcome.responseMessageId);
+    return expectedAuthor ? [outcome.targetAuthor === (outcome.authorId === expectedAuthor)] : [];
+  });
   const corrections = outcomes.filter((outcome) =>
     outcome.signal === 'correction' || outcome.signal === 'negative_feedback' || outcome.signal === 'reaction_negative'
   ).length;
-  const directlyAttributed = outcomes.filter((outcome) => outcome.attribution != null || outcome.source === 'reaction').length;
   const recallTraces = traces.filter((trace) => /\b(remember|recall|last night|yesterday|we talked|talked about)\b/i.test(trace.prompt));
   const latencyValues = traces.flatMap((trace) => trace.latency
     ? [trace.latency.memoryMs + trace.latency.contextMs + trace.latency.cognitiveMs + trace.latency.generationMs + trace.latency.recallRepairMs + trace.latency.preSendMs]
@@ -185,7 +193,7 @@ async function observedReplayMetrics(subjectId: string | undefined, maxPredictio
   const contextValues = traces.map((trace) => trace.systemChars + trace.promptChars);
   const personaFormatted = traces.filter((trace) => trace.answer.trim().length > 0 && trace.answer.length <= 8000).length;
   const grounding = ratio(outcomes.length - corrections, outcomes.length);
-  const speakerAttribution = ratio(directlyAttributed, outcomes.length);
+  const speakerAttribution = ratio(attributionChecks.filter(Boolean).length, attributionChecks.length);
   const temporalRecall = ratio(recallTraces.filter((trace) => trace.retrieved.length > 0).length, recallTraces.length);
   const personaConsistency = ratio(personaFormatted, traces.length);
   const predictionPrecision = ratio(resolutions.filter((resolution) => resolution.matched).length, resolutions.length);
@@ -247,7 +255,17 @@ function isOutcome(value: unknown): value is SocialOutcomeEventData {
       typeof value === 'object' &&
       !Array.isArray(value) &&
       typeof (value as { signal?: unknown }).signal === 'string' &&
-      (value as { targetAuthor?: unknown }).targetAuthor !== false,
+      typeof (value as { targetAuthor?: unknown }).targetAuthor === 'boolean',
+  );
+}
+
+function isResponseLink(value: unknown): value is ResponseLinkEventData {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      typeof (value as { responseMessageId?: unknown }).responseMessageId === 'string' &&
+      typeof (value as { authorId?: unknown }).authorId === 'string',
   );
 }
 

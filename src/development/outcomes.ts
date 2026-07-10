@@ -175,7 +175,7 @@ async function recordOutcome(args: {
             evidenceIds: outcome.evidenceIds,
           }),
         ];
-    await Promise.all([...utilityUpdates, resolvePredictions(args.link, outcome)]);
+    await Promise.all([...utilityUpdates, resolveOpenPredictions(outcome)]);
   }
 
   if (args.authorId === args.link.data.authorId && Math.abs(args.reward) >= 0.5) {
@@ -189,50 +189,74 @@ async function recordOutcome(args: {
   }
 }
 
-async function resolvePredictions(
-  link: DevelopmentEvent<ResponseLinkEventData>,
+async function resolveOpenPredictions(
   outcome: DevelopmentEvent<SocialOutcomeEventData>,
 ): Promise<void> {
-  if (!link.data.cognitiveStateId || link.data.predictionIds.length === 0) return;
-  const stateEvent = await getDevelopmentStore().get(link.data.cognitiveStateId);
-  const predictions = isCognitiveStateData(stateEvent?.data) ? stateEvent.data.state.predictions : [];
+  const store = getDevelopmentStore();
+  const since = new Date(Date.parse(outcome.timestamp) - config.development.outcomeWindowHours * 3_600_000);
+  const [links, subjectOutcomes, resolutionEvents] = await Promise.all([
+    store.list({ kinds: ['response_link'], subjectId: outcome.subjectId, channelId: outcome.channelId, since }),
+    store.list({ kinds: ['social_outcome'], subjectId: outcome.subjectId, channelId: outcome.channelId, since }),
+    store.list({ kinds: ['prediction_resolution'], subjectId: outcome.subjectId }),
+  ]);
   const resolved = new Set(
-    (await getDevelopmentStore().list({ kinds: ['prediction_resolution'], subjectId: link.subjectId }))
-      .flatMap((event) => (isPredictionResolutionData(event.data) ? [event.data.predictionId] : [])),
+    resolutionEvents.flatMap((event) => predictionIdFromResolution(event.data)),
   );
-  for (const prediction of predictions) {
-    if (!link.data.predictionIds.includes(prediction.id)) continue;
-    if (resolved.has(prediction.id)) continue;
-    const matched = signalsMatch(prediction.signal, outcome.data.signal);
-    if (!shouldResolvePrediction(prediction.signal, outcome.data.signal, outcome.data.reward)) continue;
-    const reward = matched ? 1 : -0.25;
-    const data: PredictionResolutionEventData = {
-      resolutionRule: 'match_or_signal_v2',
-      predictionId: prediction.id,
-      responseMessageId: link.data.responseMessageId,
-      predictedSignal: prediction.signal,
-      observedSignal: outcome.data.signal,
-      matched,
-      reward,
-    };
-    const { event: resolution, created } = await getDevelopmentStore().appendWithStatus<PredictionResolutionEventData>({
-      kind: 'prediction_resolution',
-      subjectId: link.subjectId,
-      channelId: link.channelId,
-      evidenceIds: outcome.evidenceIds,
-      dedupeKey: `prediction-resolution:${prediction.id}`,
-      data,
-    });
-    if (!created) continue;
-    await recordUtilityUpdates({
-      targetType: 'prediction',
-      targetIds: [prediction.signal],
-      reward,
-      outcomeId: resolution.id,
-      subjectId: link.subjectId,
-      channelId: link.channelId,
-      evidenceIds: resolution.evidenceIds,
-    });
+  for (const rawLink of links) {
+    if (!isResponseLinkData(rawLink.data) || !rawLink.data.cognitiveStateId || rawLink.data.predictionIds.length === 0) continue;
+    const linkData = rawLink.data;
+    const cognitiveStateId = linkData.cognitiveStateId!;
+    if (linkData.authorId !== outcome.data.authorId || Date.parse(rawLink.timestamp) >= Date.parse(outcome.timestamp)) continue;
+    const stateEvent = await store.get(cognitiveStateId);
+    const predictions = isCognitiveStateData(stateEvent?.data) ? stateEvent.data.state.predictions : [];
+    const turnDistance = subjectOutcomes.filter(
+      (event) =>
+        Date.parse(event.timestamp) > Date.parse(rawLink.timestamp) &&
+        Date.parse(event.timestamp) <= Date.parse(outcome.timestamp) &&
+        isSocialOutcomeData(event.data) &&
+        event.data.targetAuthor &&
+        (event.data.attribution != null || event.data.source === 'reaction') &&
+        event.data.authorId === linkData.authorId,
+    ).length;
+    for (const prediction of predictions) {
+      if (!linkData.predictionIds.includes(prediction.id) || resolved.has(prediction.id)) continue;
+      const decision = predictionResolutionForObservation({
+        predicted: prediction.signal,
+        observed: outcome.data.signal,
+        observedReward: outcome.data.reward,
+        turnDistance,
+        horizonTurns: prediction.horizonTurns,
+      });
+      if (!decision) continue;
+      const data: PredictionResolutionEventData = {
+        resolutionRule: 'match_or_signal_v2',
+        predictionId: prediction.id,
+        responseMessageId: linkData.responseMessageId,
+        predictedSignal: prediction.signal,
+        observedSignal: outcome.data.signal,
+        matched: decision.matched,
+        reward: decision.reward,
+      };
+      const { event: resolution, created } = await store.appendWithStatus<PredictionResolutionEventData>({
+        kind: 'prediction_resolution',
+        subjectId: rawLink.subjectId,
+        channelId: rawLink.channelId,
+        evidenceIds: outcome.evidenceIds,
+        dedupeKey: `prediction-resolution:${prediction.id}`,
+        data,
+      });
+      if (!created) continue;
+      resolved.add(prediction.id);
+      await recordUtilityUpdates({
+        targetType: 'prediction',
+        targetIds: [prediction.signal],
+        reward: decision.reward,
+        outcomeId: resolution.id,
+        subjectId: rawLink.subjectId,
+        channelId: rawLink.channelId,
+        evidenceIds: resolution.evidenceIds,
+      });
+    }
   }
 }
 
@@ -302,8 +326,20 @@ function signalsMatch(predicted: SocialSignal, observed: SocialSignal): boolean 
   return false;
 }
 
-export function shouldResolvePrediction(predicted: SocialSignal, observed: SocialSignal, observedReward: number): boolean {
-  return signalsMatch(predicted, observed) || observedReward !== 0;
+export function predictionResolutionForObservation(args: {
+  predicted: SocialSignal;
+  observed: SocialSignal;
+  observedReward: number;
+  turnDistance: number;
+  horizonTurns: number;
+}): { matched: boolean; reward: number } | null {
+  if (signalsMatch(args.predicted, args.observed)) {
+    return { matched: true, reward: args.observedReward === 0 ? 0.25 : 1 };
+  }
+  if (args.observedReward !== 0 || args.turnDistance >= args.horizonTurns) {
+    return { matched: false, reward: -0.25 };
+  }
+  return null;
 }
 
 export function shouldUpdateOutcomeUtility(reward: number): boolean {
@@ -316,10 +352,20 @@ function isResponseLinkData(value: unknown): value is ResponseLinkEventData {
   return typeof data.responseMessageId === 'string' && Array.isArray(data.memoryIds) && Array.isArray(data.predictionIds);
 }
 
-function isPredictionResolutionData(value: unknown): value is PredictionResolutionEventData {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const resolution = value as { predictionId?: unknown; resolutionRule?: unknown };
-  return resolution.resolutionRule === 'match_or_signal_v2' && typeof resolution.predictionId === 'string';
+function predictionIdFromResolution(value: unknown): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const predictionId = (value as { predictionId?: unknown }).predictionId;
+  return typeof predictionId === 'string' ? [predictionId] : [];
+}
+
+function isSocialOutcomeData(value: unknown): value is SocialOutcomeEventData {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      typeof (value as { authorId?: unknown }).authorId === 'string' &&
+      typeof (value as { targetAuthor?: unknown }).targetAuthor === 'boolean',
+  );
 }
 
 function isCognitiveStateData(value: unknown): value is CognitiveStateEventData {
