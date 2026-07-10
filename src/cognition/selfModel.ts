@@ -1,12 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { PersonaAffect } from '../llm/personaOutput.js';
 
 const SELF_SCHEMA = 'mnemo.self-model.v1';
 const SELF_PATH = path.resolve('data', 'self-model.json');
 const MAX_NOTES = 6;
 const NOTE_MAX_CHARS = 180;
-const DRIFT_ALPHA = 0.12; // small, so meaningful change takes weeks of interaction
 
 export interface AffectBaseline {
   valence: number; // -1..1
@@ -70,27 +68,12 @@ export class SelfModelStore {
   }
 
   /**
-   * Evolve her self. Baseline drifts (slowly) toward the affect she actually felt
-   * recently; self-notes are replaced by an evidence-grounded edited set. Returns
-   * the new model plus a human-readable summary of what changed.
+   * Apply evidence-gated self-note edits. The durable baseline is intentionally
+   * not driven by generated response affect; that would create a self-reward loop.
    */
-  async evolve(args: { recentAffects: PersonaAffect[]; noteEdits?: SelfNoteEdit[] }): Promise<{ model: SelfModel; changed: string[] }> {
+  async evolve(args: { noteEdits?: SelfNoteEdit[] }): Promise<{ model: SelfModel; changed: string[] }> {
     const model = await this.get();
     const changed: string[] = [];
-
-    const avg = averageAffect(args.recentAffects);
-    if (avg) {
-      const before = { ...model.baseline };
-      model.baseline = {
-        valence: drift(model.baseline.valence, avg.valence ?? model.baseline.valence),
-        arousal: drift(model.baseline.arousal, avg.arousal ?? model.baseline.arousal),
-        dominance: drift(model.baseline.dominance, avg.dominance ?? model.baseline.dominance),
-        socialEnergy: drift(model.baseline.socialEnergy, avg.socialEnergy ?? model.baseline.socialEnergy),
-      };
-      if (Math.abs(model.baseline.valence - before.valence) >= 0.01 || Math.abs(model.baseline.arousal - before.arousal) >= 0.01) {
-        changed.push(`baseline mood drifted toward valence ${model.baseline.valence.toFixed(2)}, energy ${model.baseline.arousal.toFixed(2)}`);
-      }
-    }
 
     for (const edit of args.noteEdits ?? []) {
       const note = edit.note?.trim().slice(0, NOTE_MAX_CHARS) ?? '';
@@ -134,20 +117,6 @@ export function describeBaseline(b: AffectBaseline): string {
   const tone = b.valence >= 0.33 ? 'warm' : b.valence <= -0.2 ? 'guarded' : 'even';
   const edge = b.dominance >= 0.6 ? ', a little smug' : b.dominance <= 0.35 ? ', a little soft' : '';
   return `${energy} and ${tone}${edge} (valence ${b.valence.toFixed(2)}, energy ${b.arousal.toFixed(2)})`;
-}
-
-function averageAffect(affects: PersonaAffect[]): PersonaAffect | null {
-  const valid = affects.filter(Boolean);
-  if (!valid.length) return null;
-  const mean = (key: keyof PersonaAffect): number | undefined => {
-    const nums = valid.map((a) => a[key]).filter((v): v is number => typeof v === 'number');
-    return nums.length ? nums.reduce((s, v) => s + v, 0) / nums.length : undefined;
-  };
-  return { valence: mean('valence'), arousal: mean('arousal'), dominance: mean('dominance'), socialEnergy: mean('socialEnergy') };
-}
-
-function drift(current: number, target: number): number {
-  return Number((current * (1 - DRIFT_ALPHA) + target * DRIFT_ALPHA).toFixed(4));
 }
 
 function clamp(v: number, min: number, max: number): number {

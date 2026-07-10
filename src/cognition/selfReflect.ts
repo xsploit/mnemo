@@ -143,7 +143,7 @@ async function evaluateCandidate(candidate: DevelopmentEvent<SelfDeltaCandidateE
       note: strongest.data.note,
       targetIndex: strongest.data.targetIndex,
     };
-    const result = await selfModelStore.evolve({ recentAffects: [], noteEdits: [edit] });
+    const result = await selfModelStore.evolve({ noteEdits: [edit] });
     changed = result.changed;
     decision = changed.length ? 'accepted' : 'rejected';
   }

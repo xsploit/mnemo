@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { PersonaAffect } from '../llm/personaOutput.js';
 
 const AFFINITY_SCHEMA = 'mnemo.affinity.v1';
 const AFFINITY_PATH = path.resolve('data', 'affinity.json');
@@ -43,22 +42,6 @@ export class AffinityStore {
   async get(userId: string): Promise<AffinityView> {
     const entry = (await this.load()).get(userId);
     return deriveView(entry);
-  }
-
-  /**
-   * Legacy compatibility path. New live code must not call this with Hikari's
-   * generated affect because her own output is not evidence about the user.
-   */
-  async update(userId: string, userName: string, affect: PersonaAffect | null): Promise<AffinityView> {
-    const view = await this.observeInteraction(userId, userName);
-    if (!affect) return view;
-    return this.applyOutcome({
-      userId,
-      userName,
-      evidenceKey: `legacy-generated-affect:${Date.now()}`,
-      valence: affect.valence ?? 0,
-      warmth: affect.socialEnergy ?? ((affect.valence ?? 0) + 1) / 2,
-    });
   }
 
   /** Count familiarity without treating Hikari's generated mood as user evidence. */
