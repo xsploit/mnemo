@@ -24,6 +24,7 @@ import { ttsPolicy } from './ttsPolicy.js';
 import { buildDiscordVoiceClip, fishTtsConfigured, sendDiscordVoiceMessage } from '../voice/fishTts.js';
 import { buildTaggedFishSpeechText } from '../voice/fishSpeechTags.js';
 import { appendTurnTrace } from './turnTrace.js';
+import { linkDiscordResponse, observeFollowupMessage, observeReaction } from '../development/outcomes.js';
 
 const log = logger('bot');
 
@@ -66,13 +67,15 @@ export function createClient(): Client {
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.DirectMessageReactions,
     GatewayIntentBits.GuildVoiceStates, // required for /vc voice connections
   ];
   if (config.discord.guildMembersIntent) intents.push(GatewayIntentBits.GuildMembers);
 
   const client = new Client({
     intents,
-    partials: [Partials.Channel], // needed to receive DMs
+    partials: [Partials.Channel, Partials.Message, Partials.Reaction],
   });
 
   const batches = new Map<string, Batch>();
@@ -104,6 +107,15 @@ export function createClient(): Client {
   client.on(Events.MessageCreate, async (msg: Message) => {
     if (!client.user) return;
     if (msg.author.id === client.user.id) return;
+    void observeFollowupMessage({
+      messageId: msg.id,
+      channelId: msg.channelId,
+      authorId: msg.author.id,
+      authorName: (msg.member?.displayName ?? msg.author.displayName) || msg.author.username,
+      content: msg.cleanContent || msg.content,
+      createdAt: msg.createdAt,
+      referencedMessageId: msg.reference?.messageId ?? null,
+    }).catch((e: any) => log.warn('developmental follow-up skipped', e?.message ?? e));
     if (msg.author.bot) {
       await recordPassiveBotContext(msg);
       if (!getRespondToBots()) return;
@@ -154,6 +166,24 @@ export function createClient(): Client {
       void flushBatch(client, batch);
     }, Math.max(config.bot.batchMs, 0));
     batches.set(key, batch);
+  });
+
+  client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    if (!client.user || user.bot) return;
+    try {
+      if (reaction.partial) await reaction.fetch();
+      if (reaction.message.partial) await reaction.message.fetch();
+      if (reaction.message.author?.id !== client.user.id) return;
+      await observeReaction({
+        responseMessageId: reaction.message.id,
+        channelId: reaction.message.channelId,
+        authorId: user.id,
+        authorName: user.displayName || user.username || user.id,
+        emoji: reaction.emoji.toString(),
+      });
+    } catch (e: any) {
+      log.warn('developmental reaction skipped', e?.message ?? e);
+    }
   });
 
   return client;
@@ -220,6 +250,9 @@ async function fetchHistory(channel: TextBasedChannel, n: number, excludeId: str
       .reverse()
       .slice(-n)
       .map((m) => ({
+        messageId: m.id,
+        authorId: m.author.id,
+        timestamp: m.createdAt.toISOString(),
         author: m.member?.displayName ?? m.author.displayName,
         username: m.author.username,
         bot: m.author.bot,
@@ -269,17 +302,32 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
     stopTyping(); // the reply is about to land — indicator's job is done
     if (config.bot.moodPresence) applyMoodPresence(client);
     const chunks = splitMessage(reply);
+    const responseMessageIds: string[] = [];
     for (let i = 0; i < chunks.length; i++) {
       const part = chunks[i]!;
       if (i === 0) {
         // Reply to the user's message, but if that message was deleted the
         // reference is gone — fall back to a plain channel send instead of erroring.
-        await msg.reply(part).catch(async () => {
-          if ('send' in msg.channel) await msg.channel.send(part);
-        });
+        const sent = await msg.reply(part).catch(async () => ('send' in msg.channel ? msg.channel.send(part) : null));
+        if (sent?.id) responseMessageIds.push(sent.id);
       } else if ('send' in msg.channel) {
-        await msg.channel.send(part);
+        const sent = await msg.channel.send(part);
+        responseMessageIds.push(sent.id);
       }
+    }
+
+    if (response.development && responseMessageIds.length) {
+      await linkDiscordResponse({
+        responseMessageIds,
+        requestMessageId: msg.id,
+        subjectId: msg.author.id,
+        channelId: msg.channelId,
+        turnTraceId: response.development.turnTraceId,
+        cognitiveStateId: response.development.cognitiveStateId,
+        predictions: response.development.predictions,
+        memoryIds: response.development.memoryIds,
+        strategyKeys: response.development.strategyKeys,
+      }).catch((e: any) => log.warn('developmental response link skipped after send', e?.message ?? e));
     }
 
     // Occasionally react to the user's message with a mood-matched emoji —

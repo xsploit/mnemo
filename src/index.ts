@@ -18,7 +18,7 @@ const lastAnnouncedAt = new Map<string, number>();
 
 function dreamIsSalient(report: DreamReport): boolean {
   if (!report.diaryEntry) return false;
-  return report.insights > 0 || report.factsAdded > 0 || report.selfEvolution.length > 0;
+  return report.insights > 0 || report.factsAdded > 0 || report.simulations > 0 || report.selfEvolution.length > 0;
 }
 
 async function announceDream(client: Client, report: DreamReport): Promise<void> {
@@ -40,6 +40,7 @@ async function announceDream(client: Client, report: DreamReport): Promise<void>
       report.factsAdded ? `learned **${report.factsAdded}** new thing${report.factsAdded === 1 ? '' : 's'}` : '',
       report.factsUpdated ? `updated **${report.factsUpdated}**` : '',
       report.insights ? `had **${report.insights}** realization${report.insights === 1 ? '' : 's'}` : '',
+      report.simulations ? `rehearsed **${report.simulations}** possibilit${report.simulations === 1 ? 'y' : 'ies'}` : '',
     ]
       .filter(Boolean)
       .join(' · ');
@@ -53,6 +54,15 @@ async function announceDream(client: Client, report: DreamReport): Promise<void>
     if (consolidated) embed.addFields({ name: 'while she slept', value: consolidated });
     if (report.selfEvolution.length) {
       embed.addFields({ name: 'how she changed', value: report.selfEvolution.slice(0, 3).join('\n').slice(0, 1024) });
+    }
+    if (report.simulationPreview) {
+      embed.addFields({
+        name: 'a possibility she wondered about',
+        value: report.simulationPreview.slice(0, 1024),
+      });
+    }
+    if (report.policyCandidate) {
+      embed.addFields({ name: 'memory lab candidate', value: report.policyCandidate.slice(0, 1024) });
     }
 
     await channel.send({

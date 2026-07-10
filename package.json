@@ -17,6 +17,8 @@
     "db:init": "tsx src/db/init.ts",
     "smoke": "tsx src/smoke.ts",
     "login-test": "tsx src/login-test.ts",
+    "eval:development": "tsx src/scripts/evalDevelopment.ts",
+    "eval:development:observed": "tsx src/scripts/evalObservedDevelopment.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

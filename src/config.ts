@@ -108,8 +108,6 @@ export const config = {
     moodMomentum: bool('MOOD_MOMENTUM', true),
     /** Reflect current mood in the bot's Discord custom status. */
     moodPresence: bool('MOOD_PRESENCE', true),
-    /** Hidden inner-voice deliberation pass before each public reply (one extra fast call). */
-    innerVoice: bool('INNER_VOICE', true),
     /** Let the sleep worker drift her own affect baseline + self-concept over time. */
     selfEvolution: bool('SELF_EVOLUTION', true),
     /** Occasionally react to the user's message with a mood-matched emoji. */
@@ -254,6 +252,31 @@ export const config = {
     localBackup: bool('EMBED_LOCAL_BACKUP', true),
     /** Local model (downloaded once, runs offline). 384-dim by default. */
     localModel: opt('EMBED_LOCAL_MODEL', 'Xenova/all-MiniLM-L6-v2'),
+  },
+  development: {
+    /** Master switch for Hikari's experimental cognition/event loop. */
+    enabled: bool('DEVELOPMENT_ENABLED', true),
+    /** Structured replacement for the older free-form inner-voice pass. */
+    cognitivePrepass: bool('DEVELOPMENT_COGNITIVE_PREPASS', bool('INNER_VOICE', true)),
+    /** A later message/reaction may resolve the latest response inside this window. */
+    outcomeWindowHours: Math.max(1, num('DEVELOPMENT_OUTCOME_WINDOW_HOURS', 24)),
+    /** Unreferenced follow-ups only attach implicitly for a short conversational window. */
+    implicitOutcomeWindowMinutes: Math.max(1, num('DEVELOPMENT_IMPLICIT_OUTCOME_WINDOW_MINUTES', 30)),
+    /** Maximum observable hypotheses compiled for one turn. */
+    maxPredictions: Math.max(1, Math.min(5, num('DEVELOPMENT_MAX_PREDICTIONS', 3))),
+    /** EMA step used for memory/strategy/prediction utility updates. */
+    utilityAlpha: Math.max(0.01, Math.min(1, num('DEVELOPMENT_UTILITY_ALPHA', 0.2))),
+    /** Maximum multiplicative influence learned utility has on semantically relevant recall. */
+    utilityWeight: Math.max(0, Math.min(0.5, num('DEVELOPMENT_UTILITY_WEIGHT', 0.2))),
+    /** Utility cannot boost a memory below this semantic relevance gate. */
+    utilityMinRelevance: Math.max(0, Math.min(1, num('DEVELOPMENT_UTILITY_MIN_RELEVANCE', 0.2))),
+    simulationsPerDream: Math.max(0, Math.min(5, num('DEVELOPMENT_SIMULATIONS_PER_DREAM', 3))),
+    /** Slow identity changes require repeated evidence across independent sleep cycles. */
+    selfDeltaMinEvidence: Math.max(2, num('DEVELOPMENT_SELF_DELTA_MIN_EVIDENCE', 3)),
+    selfDeltaMinCycles: Math.max(2, num('DEVELOPMENT_SELF_DELTA_MIN_CYCLES', 2)),
+    policyLabEnabled: bool('DEVELOPMENT_POLICY_LAB', true),
+    /** No external service by default. Letta and other adapters are explicit opt-ins later. */
+    shadowProvider: opt('DEVELOPMENT_SHADOW_PROVIDER', 'local-baseline').toLowerCase(),
   },
   db: {
     url: opt('DATABASE_URL') || undefined,

@@ -1,0 +1,279 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { renderHistoryXml, type HistoryTurn } from '../bot/respond.js';
+import { config } from '../config.js';
+import type { ScoredMemory } from '../memory/types.js';
+import { DevelopmentEventStore, utilityKey } from './eventStore.js';
+import { classifyFollowup, rewardForSignal } from './outcomes.js';
+import { decidePolicyCandidate, type ReplayMetrics } from './policyLab.js';
+import { getEffectiveDevelopmentPolicy } from './effectivePolicy.js';
+import { computeObservedDevelopmentMetrics } from './observedMetrics.js';
+import type {
+  DreamSimulationEventData,
+  PolicyDecisionEventData,
+  SocialOutcomeEventData,
+  UtilityProjection,
+  UtilityUpdateEventData,
+} from './types.js';
+import { applyUtilityToMemories } from './utility.js';
+
+export interface DevelopmentReplayReport {
+  ok: boolean;
+  checks: Record<string, boolean>;
+  control: {
+    invariantScore: number;
+    latencyMs: number;
+    contextChars: number;
+  };
+  elapsedMs: number;
+}
+
+export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
+  const started = performance.now();
+  const checks: Record<string, boolean> = {};
+
+  const followupFixtures = [
+    ['No, that is wrong. I said Hikari.', 'correction'],
+    ['Exactly, that is what I meant.', 'positive_feedback'],
+    ['That was a bad answer.', 'negative_feedback'],
+    ['How did you decide that?', 'follow_up_question'],
+    ['We were talking about voice chat.', 'topic_continuation'],
+  ] as const;
+  for (const [text, expected] of followupFixtures) assert.equal(classifyFollowup(text), expected);
+  checks.followupClassification = true;
+  assert.equal(rewardForSignal('correction'), -1);
+  assert.ok(rewardForSignal('positive_feedback') > 0);
+  checks.outcomeRewards = true;
+
+  const history: HistoryTurn[] = [
+    { messageId: '1', authorId: 'human-a', username: 'alpha', author: 'Alpha', content: '<b>one</b>' },
+    { messageId: '2', authorId: 'bot-b', username: 'beta', author: 'Beta Bot', bot: true, content: 'two' },
+    { messageId: '3', authorId: 'self', username: 'hikari', author: 'Hikari', bot: true, self: true, content: 'three' },
+  ];
+  const historyXml = renderHistoryXml(history);
+  assert.match(historyXml, /from_user="alpha" display_name="Alpha"/);
+  assert.match(historyXml, /from_user="beta" display_name="Beta Bot" bot="true"/);
+  assert.match(historyXml, /from_user="hikari" display_name="Hikari" bot="true" self="true"/);
+  assert.ok(historyXml.includes('&lt;b&gt;one&lt;/b&gt;'));
+  checks.speakerAttribution = true;
+
+  const high = fakeMemory('high', 1, 0.8);
+  const low = fakeMemory('low', 0.9, 0.05);
+  const projection = new Map<string, UtilityProjection>([
+    [
+      utilityKey('memory', high.id, 'global'),
+      {
+        targetType: 'memory',
+        targetId: high.id,
+        contextKey: 'global',
+        value: 1,
+        updates: 3,
+        lastUpdatedAt: new Date().toISOString(),
+      },
+    ],
+    [
+      utilityKey('memory', low.id, 'global'),
+      {
+        targetType: 'memory',
+        targetId: low.id,
+        contextKey: 'global',
+        value: 1,
+        updates: 3,
+        lastUpdatedAt: new Date().toISOString(),
+      },
+    ],
+  ]);
+  const reranked = applyUtilityToMemories([low, high], projection, 'global', 0.2, 0.2);
+  assert.equal(reranked[0]?.id, 'high');
+  assert.equal(reranked.find((memory) => memory.id === 'low')?.score, low.score);
+  checks.utilityRelevanceGate = true;
+
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hikari-development-replay-'));
+  try {
+    const store = new DevelopmentEventStore(path.join(tempRoot, 'events.jsonl'));
+    const simulation: DreamSimulationEventData = {
+      cycleId: 'cycle-1',
+      simulation: {
+        simulationId: 'sim-1',
+        title: 'Maybe they ask again',
+        premise: 'A possible future, not history.',
+        possibleUserMove: 'They ask a follow-up.',
+        responseStance: 'Answer directly and recall the evidence.',
+        uncertainty: 'They may change topics instead.',
+        confidence: 0.5,
+        sourceMemoryIds: ['memory-1'],
+      },
+    };
+    const first = await store.append({
+      kind: 'dream_simulation',
+      subjectId: 'user-1',
+      evidenceIds: ['memory:memory-1'],
+      dedupeKey: 'simulation-fixture',
+      data: simulation,
+    });
+    const duplicate = await store.append({
+      kind: 'dream_simulation',
+      subjectId: 'user-1',
+      evidenceIds: ['memory:memory-1'],
+      dedupeKey: 'simulation-fixture',
+      data: simulation,
+    });
+    assert.equal(first.id, duplicate.id);
+    assert.equal((await store.list({ kinds: ['dream_simulation'] })).length, 1);
+    assert.equal((await store.list({ kinds: ['cognitive_state'] })).length, 0);
+    checks.simulationIsolationAndIdempotency = true;
+
+    const utility: UtilityUpdateEventData = {
+      targetType: 'memory',
+      targetId: 'memory-1',
+      contextKey: 'global',
+      reward: 1,
+      alpha: 0.2,
+      previous: 0,
+      next: 0.2,
+      outcomeId: 'outcome-1',
+    };
+    await store.append({ kind: 'utility_update', evidenceIds: ['outcome-1'], data: utility });
+    assert.equal((await store.utilityProjection()).get(utilityKey('memory', 'memory-1', 'global'))?.value, 0.2);
+    checks.utilityProjection = true;
+
+    const positiveOutcome: SocialOutcomeEventData = {
+      responseMessageId: 'response-1',
+      authorId: 'user-1',
+      signal: 'positive_feedback',
+      reward: 0.85,
+      source: 'message',
+      detail: 'exactly',
+    };
+    const correctionOutcome: SocialOutcomeEventData = {
+      responseMessageId: 'response-2',
+      authorId: 'user-1',
+      signal: 'correction',
+      reward: -1,
+      source: 'message',
+      detail: 'that is wrong',
+    };
+    await store.append({ kind: 'social_outcome', subjectId: 'user-1', data: positiveOutcome });
+    await store.append({ kind: 'social_outcome', subjectId: 'user-1', data: correctionOutcome });
+    await store.append({
+      kind: 'prediction_resolution',
+      subjectId: 'user-1',
+      data: {
+        predictionId: 'prediction-1',
+        responseMessageId: 'response-1',
+        predictedSignal: 'positive_feedback',
+        observedSignal: 'positive_feedback',
+        matched: true,
+        reward: 1,
+      },
+    });
+    const observed = await computeObservedDevelopmentMetrics(store, 'user-1');
+    assert.equal(observed.outcomes, 2);
+    assert.equal(observed.positiveRate, 0.5);
+    assert.equal(observed.correctionRate, 0.5);
+    assert.equal(observed.predictionPrecision, 1);
+    assert.equal(observed.predictionBrier, null);
+    checks.observedMetrics = true;
+
+    const decision: PolicyDecisionEventData = {
+      policyId: 'policy-fixture',
+      parameter: 'development.maxPredictions',
+      currentValue: 3,
+      proposedValue: 2,
+      targetMetric: 'predictionPrecision',
+      reason: 'replay fixture',
+      decision: 'promoted',
+      baselineScore: 0.8,
+      candidateScore: 0.9,
+      regressions: [],
+    };
+    await store.append({ kind: 'policy_decision', subjectId: 'user-1', data: decision });
+    assert.equal((await getEffectiveDevelopmentPolicy(store, 'user-1')).maxPredictions, 2);
+    assert.equal((await getEffectiveDevelopmentPolicy(store, 'other-user')).maxPredictions, config.development.maxPredictions);
+    checks.promotedPolicyProjection = true;
+
+    const concurrentlyLoaded = new DevelopmentEventStore(path.join(tempRoot, 'events.jsonl'));
+    const [, concurrentAppend] = await Promise.all([
+      concurrentlyLoaded.list(),
+      concurrentlyLoaded.append({
+        kind: 'shadow_memory_result',
+        subjectId: 'user-1',
+        dedupeKey: 'concurrent-load-fixture',
+        data: {
+          provider: 'local-baseline',
+          operation: 'retrieve',
+          latencyMs: 1,
+          accepted: true,
+          itemIds: ['memory-1'],
+          detail: 'concurrent load fixture',
+        },
+      }),
+    ]);
+    assert.equal(concurrentAppend.dedupeKey, 'concurrent-load-fixture');
+    assert.equal((await concurrentlyLoaded.list()).filter((event) => event.dedupeKey === 'concurrent-load-fixture').length, 1);
+    checks.concurrentEventLoad = true;
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+
+  const baseline = metrics({ predictionPrecision: 0.5 });
+  const better = metrics({ predictionPrecision: 0.62 });
+  assert.equal(decidePolicyCandidate('predictionPrecision', baseline, better).decision, 'promoted');
+  const regressed = metrics({ predictionPrecision: 0.7, grounding: 0.8 });
+  const rejected = decidePolicyCandidate('predictionPrecision', baseline, regressed);
+  assert.equal(rejected.decision, 'rejected');
+  assert.ok(rejected.regressions.includes('grounding'));
+  checks.policyRegressionGate = true;
+
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+  const elapsedMs = performance.now() - started;
+  return {
+    ok: passed === total,
+    checks,
+    control: {
+      invariantScore: total ? passed / total : 0,
+      latencyMs: elapsedMs,
+      contextChars: historyXml.length,
+    },
+    elapsedMs,
+  };
+}
+
+function fakeMemory(id: string, score: number, relevance: number): ScoredMemory {
+  const now = new Date();
+  return {
+    id,
+    subjectId: 'user-1',
+    kind: 'semantic',
+    content: id,
+    embedding: null,
+    importance: 5,
+    createdAt: now,
+    lastAccessedAt: now,
+    validFrom: now,
+    validTo: null,
+    supersedes: null,
+    reasoning: null,
+    sources: [],
+    meta: {},
+    score,
+    parts: { relevance, importance: 0.5, recency: 1 },
+  };
+}
+
+function metrics(overrides: Partial<ReplayMetrics> = {}): ReplayMetrics {
+  const base: ReplayMetrics = {
+    grounding: 1,
+    speakerAttribution: 1,
+    temporalRecall: 1,
+    personaConsistency: 1,
+    predictionPrecision: 0.5,
+    latencyMs: 20,
+    contextChars: 1000,
+    overall: 0.9,
+  };
+  return { ...base, ...overrides };
+}

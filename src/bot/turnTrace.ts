@@ -37,6 +37,13 @@ export interface TurnTraceInput {
   retrieved: ScoredMemory[];
   affect?: PersonaAffect | null;
   toolTrace?: ToolTraceEntry[];
+  development?: {
+    cognitiveStateId: string | null;
+    compiler: 'model' | 'fallback';
+    topic: string;
+    primaryGoal: string;
+    predictionCount: number;
+  };
 }
 
 export interface TurnTraceRecord extends TurnTraceInput {
@@ -52,6 +59,12 @@ export async function appendTurnTrace(input: TurnTraceInput): Promise<TurnTraceR
     prompt: clamp(input.prompt, 8000),
     answer: clamp(input.answer, 8000),
     history: input.history.map((item) => ({
+      messageId: item.messageId ? clamp(item.messageId, 240) : undefined,
+      authorId: item.authorId ? clamp(item.authorId, 240) : undefined,
+      timestamp: item.timestamp ? clamp(item.timestamp, 80) : undefined,
+      username: item.username ? clamp(item.username, 200) : undefined,
+      bot: item.bot,
+      self: item.self,
       author: clamp(item.author, 200),
       content: clamp(item.content, 1200),
     })),
@@ -70,6 +83,15 @@ export async function appendTurnTrace(input: TurnTraceInput): Promise<TurnTraceR
       output: clampUnknown(item.output, 12000),
       error: clampUnknown(item.error, 4000),
     })),
+    development: input.development
+      ? {
+          cognitiveStateId: input.development.cognitiveStateId,
+          compiler: input.development.compiler,
+          topic: clamp(input.development.topic, 200),
+          primaryGoal: clamp(input.development.primaryGoal, 240),
+          predictionCount: Math.max(0, Math.trunc(input.development.predictionCount)),
+        }
+      : undefined,
   };
   await fs.mkdir(path.dirname(TRACE_PATH), { recursive: true });
   await fs.appendFile(TRACE_PATH, `${JSON.stringify(record)}\n`, 'utf8');

@@ -84,6 +84,16 @@ import {
   setCodexBridgePaused,
 } from './codexBridge.js';
 import { formatShitlistReply, formatShitlistStatus, shitlistStore } from './shitlist.js';
+import { getDevelopmentStore } from '../development/eventStore.js';
+import { computeObservedDevelopmentMetrics } from '../development/observedMetrics.js';
+import { getEffectiveDevelopmentPolicy } from '../development/effectivePolicy.js';
+import type {
+  CognitiveStateEventData,
+  DreamSimulationEventData,
+  PolicyCandidateEventData,
+  PolicyDecisionEventData,
+  UtilityUpdateEventData,
+} from '../development/types.js';
 
 const NAME = config.bot.name;
 
@@ -279,6 +289,22 @@ export const commandData = [
   new SlashCommandBuilder()
     .setName('why')
     .setDescription(`Show what ${NAME} used for the last answer in this channel.`),
+  new SlashCommandBuilder()
+    .setName('development')
+    .setDescription(`Inspect ${NAME}'s experimental developmental cognition.`)
+    .addStringOption((o) =>
+      o
+        .setName('view')
+        .setDescription('Experimental state to inspect. Defaults to status.')
+        .addChoices(
+          { name: 'status', value: 'status' },
+          { name: 'current state', value: 'state' },
+          { name: 'dream simulations', value: 'simulations' },
+          { name: 'learned utility', value: 'utility' },
+          { name: 'observed outcomes', value: 'outcomes' },
+          { name: 'policy lab', value: 'policy' },
+        ),
+    ),
   new SlashCommandBuilder()
     .setName('botchat')
     .setDescription('Owner-only: show or toggle replies to bot-authored messages.')
@@ -1170,12 +1196,16 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
       const stats = await store.stats(subjectId);
       const shitlistCount = (await shitlistStore.list()).length;
       const memoryPaused = await memoryPrivacy.isOptedOut(subjectId);
+      const developmentEvents = config.development.enabled
+        ? (await getDevelopmentStore().list({ subjectId, limit: 500 })).length
+        : 0;
       await i.editReply(
         [
           `bot=${i.client.user?.tag ?? NAME}`,
           `main=${modelIds.chat}`,
           `dream=${modelIds.dream}`,
           `json=${modelIds.json}`,
+          `embeddings=${config.embed.provider === 'local' ? config.embed.localModel : modelIds.embed}`,
           `modelOverrides=${runtimeModelStatus().filter((item) => item.overridden).map((item) => (item.role === 'chat' ? 'main' : item.role)).join(',') || 'none'}`,
           `replies=${getRepliesPaused() ? 'paused' : 'enabled'}`,
           `botchat=${getRespondToBots() ? 'enabled' : 'disabled'} startupDefault=${config.bot.respondToBots ? 'enabled' : 'disabled'}`,
@@ -1187,6 +1217,7 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
           `textAttachmentMaxChars=${config.bot.textAttachmentMaxChars}`,
           `pdfAttachmentMaxPages=${config.bot.pdfAttachmentMaxPages}`,
           `webSearch=${tavilyToolsAvailable() ? 'enabled' : 'disabled'}`,
+          `development=${config.development.enabled ? 'enabled' : 'disabled'} cognitivePrepass=${config.development.cognitivePrepass ? 'enabled' : 'disabled'} maxPredictions=${config.development.maxPredictions} events=${developmentEvents}`,
           `shitlist=${shitlistCount}`,
           `memoryPausedForYou=${memoryPaused ? 'yes' : 'no'}`,
           `memory=${stats.episodic} episodic · ${stats.semantic} facts · ${stats.reflection} insights · ${stats.diary} dreams`,
@@ -1207,6 +1238,14 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
         return;
       }
       await editLongReply(i, renderTurnTrace(trace, isOwner(i.user.id)));
+      return;
+    }
+
+    case 'development': {
+      await i.deferReply({ ephemeral: true });
+      const view = i.options.getString('view') ?? 'status';
+      const text = await renderDevelopmentView(i.user.id, view);
+      await i.editReply(text.slice(0, 1900));
       return;
     }
 
@@ -2224,7 +2263,7 @@ function memoryPausedReply(): string {
 }
 
 function dreamReportEmbed(report: DreamReport, title: string): EmbedBuilder {
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setTitle(`💤 ${title}`)
     .setDescription(report.diaryEntry ? `> ${extractPersonaMessage(report.diaryEntry)}` : '(no diary this cycle)')
     .addFields(
@@ -2234,9 +2273,226 @@ function dreamReportEmbed(report: DreamReport, title: string): EmbedBuilder {
       },
       {
         name: 'consolidation',
-        value: `+${report.factsAdded} facts · ~${report.factsUpdated} updated · −${report.factsDeleted} retired · ${report.insights} new insights · ${report.pruned} faded away`,
+        value: `+${report.factsAdded} facts · ~${report.factsUpdated} updated · −${report.factsDeleted} retired · ${report.insights} new insights · ${report.simulations} futures rehearsed · ${report.pruned} faded away`,
       },
     );
+  if (report.simulationPreview) {
+    const preview = report.simulationPreview;
+    embed.addFields({
+      name: 'a possibility she wondered about',
+      value: preview.slice(0, 1024),
+    });
+  }
+  if (report.policyCandidate) {
+    embed.addFields({ name: 'memory lab candidate', value: report.policyCandidate.slice(0, 1024) });
+  }
+  return embed;
+}
+
+async function renderDevelopmentView(subjectId: string, view: string): Promise<string> {
+  const events = await getDevelopmentStore().list({ subjectId, limit: 500 });
+  const effectivePolicy = await getEffectiveDevelopmentPolicy(getDevelopmentStore(), subjectId);
+  if (view === 'state') {
+    const event = [...events].reverse().find((candidate) => candidate.kind === 'cognitive_state');
+    if (!event || !isCognitiveStateEventData(event.data)) return 'No developmental state has been compiled for you yet.';
+    const data = event.data;
+    const state = data.state;
+    return [
+      `state=${event.id}`,
+      `compiled=${event.timestamp} via ${state.compiler}`,
+      `topic=${state.scene.topic}`,
+      `tone=${state.scene.tone}`,
+      `context=${state.scene.socialContext}`,
+      `intent=${state.userModel.likelyIntent} confidence=${state.userModel.confidence.toFixed(2)}`,
+      `responseGoal=${state.response.primaryGoal}`,
+      `appraisal=novelty:${state.appraisal.novelty.toFixed(2)} congruence:${state.appraisal.goalCongruence.toFixed(2)} certainty:${state.appraisal.certainty.toFixed(2)}`,
+      `relationshipProposal=trust:${signed(state.relationshipDelta.trustDelta)} warmth:${signed(state.relationshipDelta.warmthDelta)} (not applied without outcome evidence)`,
+      `predictions=${state.predictions.length}`,
+      ...state.predictions.map((prediction) => `- ${prediction.signal} p=${prediction.probability.toFixed(2)} ${prediction.description}`),
+    ].join('\n');
+  }
+
+  if (view === 'simulations') {
+    const simulations = events
+      .filter((event) => event.kind === 'dream_simulation')
+      .slice(-5)
+      .reverse()
+      .flatMap((event) => {
+        if (!isDreamSimulationEventData(event.data)) return [];
+        return [{ event, simulation: event.data.simulation }];
+      });
+    if (!simulations.length) return 'No prospective dream simulations have been recorded for you yet.';
+    return [
+      'Dream simulations are imagined possibilities, never remembered facts.',
+      ...simulations.map(
+        ({ event, simulation }, index) =>
+          `${index + 1}. ${simulation.title} (confidence ${simulation.confidence.toFixed(2)}, ${event.timestamp})\n` +
+          `   maybe: ${simulation.possibleUserMove}\n   stance: ${simulation.responseStance}\n   uncertainty: ${simulation.uncertainty}`,
+      ),
+    ].join('\n');
+  }
+
+  if (view === 'utility') {
+    const updates = events
+      .filter((event) => event.kind === 'utility_update')
+      .slice(-80)
+      .flatMap((event) => {
+        if (!isUtilityUpdateEventData(event.data)) return [];
+        return [{ event, data: event.data }];
+      });
+    const latest = new Map<string, (typeof updates)[number]>();
+    for (const update of updates) latest.set(`${update.data.targetType}:${update.data.targetId}:${update.data.contextKey}`, update);
+    const rows = [...latest.values()].sort((left, right) => Math.abs(right.data.next) - Math.abs(left.data.next)).slice(0, 12);
+    if (!rows.length) return 'No observed outcomes have updated memory or strategy utility for you yet.';
+    return [
+      'Learned utility is outcome evidence, bounded to [-1, 1] and gated by semantic relevance.',
+      ...rows.map(({ data }) => `- ${data.targetType}:${data.targetId} value=${data.next.toFixed(3)} reward=${data.reward.toFixed(2)}`),
+    ].join('\n');
+  }
+
+  if (view === 'policy') {
+    const policyEvents = events.filter((event) => event.kind === 'policy_candidate' || event.kind === 'policy_decision').slice(-12);
+    if (!policyEvents.length) return 'The policy lab has not queued an experiment for you yet.';
+    return [
+      'Policy candidates never change production by themselves.',
+      `effective utilityWeight=${effectivePolicy.utilityWeight} maxPredictions=${effectivePolicy.maxPredictions} promoted=${effectivePolicy.sourcePolicyIds.length}`,
+      ...policyEvents.map((event) => {
+        if (event.kind === 'policy_candidate' && isPolicyCandidateEventData(event.data)) {
+          const data = event.data;
+          return `- candidate ${data.parameter}: ${data.currentValue} -> ${data.proposedValue} target=${data.targetMetric}`;
+        }
+        if (event.kind === 'policy_decision' && isPolicyDecisionEventData(event.data)) {
+          const data = event.data;
+          return `- ${data.decision} ${data.parameter}: baseline=${data.baselineScore.toFixed(3)} candidate=${data.candidateScore.toFixed(3)} regressions=${data.regressions.join(',') || 'none'}`;
+        }
+        return '- skipped malformed policy event';
+      }),
+    ].join('\n');
+  }
+
+  if (view === 'outcomes') {
+    const metrics = await computeObservedDevelopmentMetrics(getDevelopmentStore(), subjectId);
+    return [
+      'These are observed Discord outcomes, not model-judged or synthetic scores.',
+      `outcomes=${metrics.outcomes} messages=${metrics.messageOutcomes} reactions=${metrics.reactionOutcomes}`,
+      `positiveRate=${formatObservedRate(metrics.positiveRate)}`,
+      `correctionRate=${formatObservedRate(metrics.correctionRate)}`,
+      `continuationRate=${formatObservedRate(metrics.continuationRate)}`,
+      `meanReward=${formatObservedNumber(metrics.meanReward)}`,
+      `predictionPrecision=${formatObservedRate(metrics.predictionPrecision)} n=${metrics.predictionResolutions}`,
+      `predictionBrier=${formatObservedNumber(metrics.predictionBrier)} (lower is better)`,
+      `utilityUpdates=${metrics.utilityUpdates}`,
+    ].join('\n');
+  }
+
+  const counts = new Map<string, number>();
+  for (const event of events) counts.set(event.kind, (counts.get(event.kind) ?? 0) + 1);
+  return [
+    `development=${config.development.enabled ? 'enabled' : 'disabled'}`,
+    `cognitivePrepass=${config.development.cognitivePrepass ? 'enabled' : 'disabled'}`,
+    `embeddings=${config.embed.provider}:${config.embed.localModel}`,
+    `shadow=${config.development.shadowProvider}`,
+    `utility=alpha:${config.development.utilityAlpha} weight:${effectivePolicy.utilityWeight} relevanceGate:${config.development.utilityMinRelevance}`,
+    `maxPredictions=${effectivePolicy.maxPredictions}`,
+    `selfPromotion=evidence:${config.development.selfDeltaMinEvidence} cycles:${config.development.selfDeltaMinCycles}`,
+    `simulationsPerDream=${config.development.simulationsPerDream}`,
+    `policyLab=${config.development.policyLabEnabled ? 'enabled' : 'disabled'}`,
+    `events=${events.length}`,
+    ...[...counts.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([kind, count]) => `- ${kind}: ${count}`),
+  ].join('\n');
+}
+
+function signed(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(3)}`;
+}
+
+function formatObservedRate(value: number | null): string {
+  return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`;
+}
+
+function formatObservedNumber(value: number | null): string {
+  return value == null ? 'n/a' : value.toFixed(3);
+}
+
+function isCognitiveStateEventData(value: unknown): value is CognitiveStateEventData {
+  if (!isRecord(value) || !isRecord(value.state)) return false;
+  const state = value.state;
+  return (
+    typeof state.compiler === 'string' &&
+    isRecord(state.scene) &&
+    typeof state.scene.topic === 'string' &&
+    typeof state.scene.tone === 'string' &&
+    typeof state.scene.socialContext === 'string' &&
+    isRecord(state.userModel) &&
+    typeof state.userModel.likelyIntent === 'string' &&
+    typeof state.userModel.confidence === 'number' &&
+    isRecord(state.response) &&
+    typeof state.response.primaryGoal === 'string' &&
+    isRecord(state.appraisal) &&
+    typeof state.appraisal.novelty === 'number' &&
+    typeof state.appraisal.goalCongruence === 'number' &&
+    typeof state.appraisal.certainty === 'number' &&
+    isRecord(state.relationshipDelta) &&
+    typeof state.relationshipDelta.trustDelta === 'number' &&
+    typeof state.relationshipDelta.warmthDelta === 'number' &&
+    Array.isArray(state.predictions)
+  );
+}
+
+function isDreamSimulationEventData(value: unknown): value is DreamSimulationEventData {
+  if (!isRecord(value) || typeof value.cycleId !== 'string' || !isRecord(value.simulation)) return false;
+  const simulation = value.simulation;
+  return (
+    typeof simulation.title === 'string' &&
+    typeof simulation.possibleUserMove === 'string' &&
+    typeof simulation.responseStance === 'string' &&
+    typeof simulation.uncertainty === 'string' &&
+    typeof simulation.confidence === 'number'
+  );
+}
+
+function isUtilityUpdateEventData(value: unknown): value is UtilityUpdateEventData {
+  return (
+    isRecord(value) &&
+    (value.targetType === 'memory' || value.targetType === 'strategy' || value.targetType === 'prediction') &&
+    typeof value.targetId === 'string' &&
+    typeof value.contextKey === 'string' &&
+    typeof value.reward === 'number' &&
+    typeof value.next === 'number'
+  );
+}
+
+function isPolicyCandidateEventData(value: unknown): value is PolicyCandidateEventData {
+  return (
+    isRecord(value) &&
+    typeof value.policyId === 'string' &&
+    typeof value.parameter === 'string' &&
+    typeof value.currentValue === 'number' &&
+    typeof value.proposedValue === 'number' &&
+    typeof value.targetMetric === 'string' &&
+    typeof value.reason === 'string'
+  );
+}
+
+function isPolicyDecisionEventData(value: unknown): value is PolicyDecisionEventData {
+  return (
+    isRecord(value) &&
+    typeof value.policyId === 'string' &&
+    typeof value.parameter === 'string' &&
+    typeof value.currentValue === 'number' &&
+    typeof value.proposedValue === 'number' &&
+    typeof value.targetMetric === 'string' &&
+    typeof value.reason === 'string' &&
+    (value.decision === 'promoted' || value.decision === 'rejected' || value.decision === 'deferred') &&
+    typeof value.baselineScore === 'number' &&
+    typeof value.candidateScore === 'number' &&
+    Array.isArray(value.regressions) &&
+    value.regressions.every((item) => typeof item === 'string')
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function renderContextPreview(input: {
@@ -2309,6 +2565,10 @@ function renderTurnTrace(trace: NonNullable<Awaited<ReturnType<typeof latestTurn
     `kind=${trace.kind}`,
     `model=${trace.model}`,
     trace.affect ? `affect=${formatTraceAffect(trace.affect)}` : undefined,
+    trace.development
+      ? `developmentState=${trace.development.cognitiveStateId ?? 'not-persisted'} compiler=${trace.development.compiler} predictions=${trace.development.predictionCount}`
+      : undefined,
+    trace.development ? `developmentGoal=${trace.development.primaryGoal} topic=${trace.development.topic}` : undefined,
     `systemChars=${trace.systemChars} promptChars=${trace.promptChars}`,
     `historyTurns=${trace.history.length}`,
     `retrievedMemories=${trace.retrieved.length}`,

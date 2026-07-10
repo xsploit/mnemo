@@ -16,6 +16,9 @@ export interface AffinityEntry {
   warmthEma: number;
   firstSeenAt: string;
   lastSeenAt: string;
+  /** Deduplicates real feedback/reaction evidence used to change the relationship. */
+  evidenceKeys: string[];
+  lastOutcomeAt?: string;
 }
 
 /** How Akari/Hikari relates to a user right now, derived from accumulated affect. */
@@ -33,6 +36,8 @@ interface AffinityPayload {
 }
 
 export class AffinityStore {
+  private mutationTail: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly filePath: string) {}
 
   async get(userId: string): Promise<AffinityView> {
@@ -40,27 +45,70 @@ export class AffinityStore {
     return deriveView(entry);
   }
 
-  /** Fold this turn's affect into the running relationship signal. */
+  /**
+   * Legacy compatibility path. New live code must not call this with Hikari's
+   * generated affect because her own output is not evidence about the user.
+   */
   async update(userId: string, userName: string, affect: PersonaAffect | null): Promise<AffinityView> {
-    const entries = await this.load();
-    const prev = entries.get(userId);
-    const now = new Date().toISOString();
-
-    const valence = affect?.valence ?? 0;
-    const warmth = affect?.socialEnergy ?? (valence + 1) / 2;
-
-    const entry: AffinityEntry = {
+    const view = await this.observeInteraction(userId, userName);
+    if (!affect) return view;
+    return this.applyOutcome({
       userId,
-      userName: userName || prev?.userName || userId,
-      interactions: (prev?.interactions ?? 0) + 1,
-      valenceEma: prev ? ema(prev.valenceEma, valence) : valence,
-      warmthEma: prev ? ema(prev.warmthEma, warmth) : warmth,
-      firstSeenAt: prev?.firstSeenAt ?? now,
-      lastSeenAt: now,
-    };
-    entries.set(userId, entry);
-    await this.save(entries);
-    return deriveView(entry);
+      userName,
+      evidenceKey: `legacy-generated-affect:${Date.now()}`,
+      valence: affect.valence ?? 0,
+      warmth: affect.socialEnergy ?? ((affect.valence ?? 0) + 1) / 2,
+    });
+  }
+
+  /** Count familiarity without treating Hikari's generated mood as user evidence. */
+  async observeInteraction(userId: string, userName: string): Promise<AffinityView> {
+    return this.mutate(async (entries) => {
+      const prev = entries.get(userId);
+      const now = new Date().toISOString();
+      const entry: AffinityEntry = {
+        userId,
+        userName: userName || prev?.userName || userId,
+        interactions: (prev?.interactions ?? 0) + 1,
+        valenceEma: prev?.valenceEma ?? 0,
+        warmthEma: prev?.warmthEma ?? 0.5,
+        firstSeenAt: prev?.firstSeenAt ?? now,
+        lastSeenAt: now,
+        evidenceKeys: prev?.evidenceKeys ?? [],
+        lastOutcomeAt: prev?.lastOutcomeAt,
+      };
+      entries.set(userId, entry);
+      return deriveView(entry);
+    });
+  }
+
+  /** Apply a deduplicated relationship update derived from observed evidence. */
+  async applyOutcome(args: {
+    userId: string;
+    userName: string;
+    evidenceKey: string;
+    valence: number;
+    warmth: number;
+  }): Promise<AffinityView> {
+    return this.mutate(async (entries) => {
+      const prev = entries.get(args.userId);
+      if (prev?.evidenceKeys.includes(args.evidenceKey)) return deriveView(prev);
+      const now = new Date().toISOString();
+      const evidenceKeys = [...(prev?.evidenceKeys ?? []), args.evidenceKey].slice(-200);
+      const entry: AffinityEntry = {
+        userId: args.userId,
+        userName: args.userName || prev?.userName || args.userId,
+        interactions: prev?.interactions ?? 0,
+        valenceEma: prev ? ema(prev.valenceEma, clampNum(args.valence, -1, 1), 0.15) : clampNum(args.valence, -1, 1),
+        warmthEma: prev ? ema(prev.warmthEma, clampNum(args.warmth, 0, 1), 0.15) : clampNum(args.warmth, 0, 1),
+        firstSeenAt: prev?.firstSeenAt ?? now,
+        lastSeenAt: prev?.lastSeenAt ?? now,
+        evidenceKeys,
+        lastOutcomeAt: now,
+      };
+      entries.set(args.userId, entry);
+      return deriveView(entry);
+    });
   }
 
   async list(): Promise<AffinityEntry[]> {
@@ -92,6 +140,10 @@ export class AffinityStore {
         warmthEma: clampNum(Number(value.warmthEma ?? 0.5), 0, 1),
         firstSeenAt: typeof value.firstSeenAt === 'string' ? value.firstSeenAt : '',
         lastSeenAt: typeof value.lastSeenAt === 'string' ? value.lastSeenAt : '',
+        evidenceKeys: Array.isArray(value.evidenceKeys)
+          ? value.evidenceKeys.filter((key): key is string => typeof key === 'string').slice(-200)
+          : [],
+        lastOutcomeAt: typeof value.lastOutcomeAt === 'string' ? value.lastOutcomeAt : undefined,
       });
     }
     return entries;
@@ -107,10 +159,21 @@ export class AffinityStore {
     await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
     await fs.rename(tempPath, this.filePath);
   }
+
+  private async mutate<T>(fn: (entries: Map<string, AffinityEntry>) => Promise<T>): Promise<T> {
+    const operation = this.mutationTail.then(async () => {
+      const entries = await this.load();
+      const result = await fn(entries);
+      await this.save(entries);
+      return result;
+    });
+    this.mutationTail = operation.catch(() => undefined);
+    return operation;
+  }
 }
 
-function ema(prev: number, next: number): number {
-  return prev * (1 - EMA_ALPHA) + next * EMA_ALPHA;
+function ema(prev: number, next: number, alpha = EMA_ALPHA): number {
+  return prev * (1 - alpha) + next * alpha;
 }
 
 function clampNum(value: number, min: number, max: number): number {

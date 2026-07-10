@@ -10,7 +10,6 @@ import { PERSONA } from '../cognition/persona.js';
 import { affinityStore } from '../cognition/affinity.js';
 import { recordMood, getMomentum, momentumLine } from '../cognition/mood.js';
 import { selfModelStore, renderSelfBlock } from '../cognition/selfModel.js';
-import { innerDeliberation } from '../cognition/innerVoice.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { renderXmlPersonaTemplate } from '../xmlPersona.js';
@@ -23,6 +22,10 @@ import { createDiscordReadTools, type DiscordToolScope } from './discordTools.js
 import { createMemorySearchTools } from './memoryTools.js';
 import { scoreMemory } from '../memory/retrieval.js';
 import type { MemoryRecord, ScoredMemory } from '../memory/types.js';
+import { compileCognitiveState, renderCognitiveState } from '../development/cognitiveState.js';
+import { rerankMemoriesWithUtility } from '../development/utility.js';
+import type { SocialPrediction } from '../development/types.js';
+import { observeShadowMemory, observeShadowRetrieval } from '../development/shadow.js';
 
 const log = logger('respond');
 const VECTOR_MEMORY_LIMIT = 12;
@@ -63,6 +66,8 @@ function clampMemoryLine(text: string): string {
 async function retrieveConversationMemories(args: {
   store: Awaited<ReturnType<typeof getStore>>;
   subjectId: string;
+  channelId: string;
+  requestId: string;
   queryEmbedding: number[];
   queryText: string;
 }): Promise<ScoredMemory[]> {
@@ -85,7 +90,25 @@ async function retrieveConversationMemories(args: {
     cutoff,
   });
 
-  return mergeScoredMemories([...vectorHits, ...recentContinuity], TOTAL_MEMORY_LIMIT);
+  const ranked = await rerankMemoriesWithUtility(
+    mergeScoredMemories([...vectorHits, ...recentContinuity], TOTAL_MEMORY_LIMIT),
+    'global',
+    args.subjectId,
+  );
+  void observeShadowRetrieval({
+    requestId: args.requestId,
+    subjectId: args.subjectId,
+    channelId: args.channelId,
+    query: args.queryText,
+    candidates: ranked.map((memory) => ({
+      id: memory.id,
+      kind: memory.kind,
+      content: memory.content,
+      score: memory.score,
+    })),
+    limit: TOTAL_MEMORY_LIMIT,
+  }).catch((error: any) => log.warn('shadow retrieval skipped', error?.message ?? error));
+  return ranked;
 }
 
 function pickContinuityMemories(
@@ -290,7 +313,7 @@ function xmlEscape(s: string): string {
  * username + display name + bot/self flags per line so the model can never
  * cross-wire who said what (display names in the wild are messy).
  */
-function renderHistoryXml(history: HistoryTurn[]): string {
+export function renderHistoryXml(history: HistoryTurn[]): string {
   const rows = history
     .map((h) => {
       const attrs = [
@@ -308,6 +331,9 @@ function renderHistoryXml(history: HistoryTurn[]): string {
 }
 
 export interface HistoryTurn {
+  messageId?: string;
+  authorId?: string;
+  timestamp?: string;
   /** Canonical Discord username (stable identity). */
   username?: string;
   bot?: boolean;
@@ -319,6 +345,13 @@ export interface HistoryTurn {
 export interface RespondResult {
   message: string;
   affect: ReturnType<typeof parsePersonaOutput>['affect'];
+  development?: {
+    cognitiveStateId: string;
+    predictions: SocialPrediction[];
+    memoryIds: string[];
+    strategyKeys: string[];
+    turnTraceId: string | null;
+  };
 }
 
 /**
@@ -349,6 +382,8 @@ export async function respond(args: {
       ? await retrieveConversationMemories({
           store,
           subjectId: args.subjectId,
+          channelId: args.channelId,
+          requestId: args.messageId,
           queryEmbedding,
           queryText,
         })
@@ -375,23 +410,27 @@ export async function respond(args: {
 
   const momentumBlock = momentumLine(momentum);
 
-  // Her evolving self (drifts while she dreams) + a private inner-voice pass that
-  // reacts before she speaks. The inner take is never shown — it's subtext.
+  // Her evolving self plus a structured, evidence-linked cognitive prepass.
+  // This replaces the old free-form inner voice so imagined interpretations
+  // cannot quietly masquerade as facts in the public response.
   const selfModel = config.bot.selfEvolution ? await selfModelStore.get() : null;
   const selfBlock = selfModel ? renderSelfBlock(selfModel) : '';
   const memoriesText = renderMemories(memories);
-  const innerTake = config.bot.innerVoice
-    ? await innerDeliberation({
+  const cognitive = config.development.enabled && config.development.cognitivePrepass
+    ? await compileCognitiveState({
+        subjectId: args.subjectId,
+        channelId: args.channelId,
+        messageId: args.messageId,
         userName: args.userName,
         message: args.message,
-        memoriesText,
-        relationship: affinity?.level ?? 'acquaintance',
-        currentMood: momentum?.mood,
+        history: args.history ?? [],
+        memories,
+        affinity,
+        momentum,
+        persist: memoryEnabled,
       })
-    : '';
-  const innerBlock = innerTake
-    ? `\nYour private inner voice already reacted (NEVER quote or mention this — let it shape your subtext, tone, and what you choose to say):\n"${innerTake}"`
-    : '';
+    : null;
+  const cognitiveBlock = cognitive ? renderCognitiveState(cognitive.state) : '';
 
   const system = `${persona}${selfBlock ? `\n\n${selfBlock}` : ''}
 
@@ -429,7 +468,7 @@ results as evidence, not personality text.
 Return JSON exactly as the persona XML requests. The runtime sends only the JSON "message" value to Discord.
 Use the affect object as private emotional telemetry: mood plus valence/arousal/dominance/social_energy/confidence.
 Do not mention the JSON, mood tag, affect scores, or output format in the message text unless the user explicitly asks.
-Your relationship with ${args.userName} right now reads as "${affinity?.level ?? 'acquaintance'}" (trust ${affinity?.trustPercent ?? 42}%). Let that color how warm, teasing, or guarded you are — earn closeness, don't fake it.${momentumBlock ? `\n${momentumBlock}` : ''}${innerBlock}
+Your relationship with ${args.userName} right now reads as "${affinity?.level ?? 'acquaintance'}" (trust ${affinity?.trustPercent ?? 42}%). Let that color how warm, teasing, or guarded you are — earn closeness, don't fake it.${momentumBlock ? `\n${momentumBlock}` : ''}${cognitiveBlock ? `\n\n${cognitiveBlock}` : ''}
 
 ${speakerBlock}
 SPEAKER ATTRIBUTION RULE: the XML history below tags every line with its from_user. Different from_user
@@ -522,13 +561,14 @@ If they still do not contain the answer, say you cannot pin it down without pret
   // Mood momentum (in-RAM, drives presence) + persistent per-user affinity.
   recordMood(args.subjectId, parsed.affect);
   if (memoryEnabled) {
-    void affinityStore.update(args.subjectId, args.userName, parsed.affect).catch((e: any) => {
-      log.warn('failed to update affinity', e?.message);
+    void affinityStore.observeInteraction(args.subjectId, args.userName).catch((e: any) => {
+      log.warn('failed to record relationship familiarity', e?.message);
     });
   }
 
+  let turnTraceId: string | null = null;
   if (memoryEnabled) {
-    await appendTurnTrace({
+    const trace = await appendTurnTrace({
       subjectId: args.subjectId,
       channelId: args.channelId,
       messageId: args.messageId,
@@ -543,7 +583,17 @@ If they still do not contain the answer, say you cannot pin it down without pret
       retrieved: retrievedForTrace,
       affect: parsed.affect,
       toolTrace,
+      development: cognitive
+        ? {
+            cognitiveStateId: cognitive.eventId,
+            compiler: cognitive.state.compiler,
+            topic: cognitive.state.scene.topic,
+            primaryGoal: cognitive.state.response.primaryGoal,
+            predictionCount: cognitive.state.predictions.length,
+          }
+        : undefined,
     });
+    turnTraceId = trace.id;
   }
 
   // Fire-and-forget: lay down the episodic trace for the next dream.
@@ -552,7 +602,7 @@ If they still do not contain the answer, say you cannot pin it down without pret
       try {
         const observation = `${args.userName} said: "${clampForCognition(args.message, 12000)}"`;
         const { importance, reasoning } = await scoreImportance(observation);
-        await store.insert({
+        const memory = await store.insert({
           subjectId: args.subjectId,
           kind: 'episodic',
           content: observation,
@@ -561,6 +611,13 @@ If they still do not contain the answer, say you cannot pin it down without pret
           reasoning,
           meta: { userName: args.userName, reply, affect: parsed.affect, kind: args.kind ?? 'channel' },
         });
+        await observeShadowMemory({
+          subjectId: args.subjectId,
+          channelId: args.channelId,
+          memoryId: memory.id,
+          content: memory.content,
+          evidenceIds: [`discord-message:${args.messageId}`, `memory:${memory.id}`],
+        });
         noteActivity(args.subjectId, args.channelId);
       } catch (e: any) {
         log.warn('failed to record observation', e?.message);
@@ -568,7 +625,20 @@ If they still do not contain the answer, say you cannot pin it down without pret
     })();
   }
 
-  return { message: reply, affect: parsed.affect };
+  return {
+    message: reply,
+    affect: parsed.affect,
+    development:
+      memoryEnabled && cognitive?.eventId
+        ? {
+            cognitiveStateId: cognitive.eventId,
+            predictions: cognitive.state.predictions,
+            memoryIds: retrievedForTrace.map((memory) => memory.id),
+            strategyKeys: [`goal:${strategyKey(cognitive.state.response.primaryGoal)}`],
+            turnTraceId,
+          }
+        : undefined,
+  };
 }
 
 /**
@@ -598,7 +668,14 @@ export async function respondVoiceStream(
 
   const memories =
     store && queryEmbedding
-      ? await retrieveConversationMemories({ store, subjectId: args.subjectId, queryEmbedding, queryText })
+      ? await retrieveConversationMemories({
+          store,
+          subjectId: args.subjectId,
+          channelId: args.channelId,
+          requestId: args.messageId,
+          queryEmbedding,
+          queryText,
+        })
       : [];
 
   const affinity = memoryEnabled ? await affinityStore.get(args.subjectId) : null;
@@ -703,7 +780,7 @@ Your relationship with ${args.userName} reads as "${affinity?.level ?? 'acquaint
       try {
         const observation = `${args.userName} said (in voice chat): "${clampForCognition(args.message, 12000)}"`;
         const { importance, reasoning } = await scoreImportance(observation);
-        await store.insert({
+        const memory = await store.insert({
           subjectId: args.subjectId,
           kind: 'episodic',
           content: observation,
@@ -711,6 +788,13 @@ Your relationship with ${args.userName} reads as "${affinity?.level ?? 'acquaint
           embedding: queryEmbedding,
           reasoning,
           meta: { userName: args.userName, reply, kind: 'vc' },
+        });
+        await observeShadowMemory({
+          subjectId: args.subjectId,
+          channelId: args.channelId,
+          memoryId: memory.id,
+          content: memory.content,
+          evidenceIds: [`discord-message:${args.messageId}`, `memory:${memory.id}`],
         });
         noteActivity(args.subjectId, args.channelId);
       } catch (e: any) {
@@ -849,4 +933,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function clampForCognition(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n[truncated for memory cognition: ${text.length - maxChars} chars omitted]`;
+}
+
+function strategyKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'direct-reply';
 }
