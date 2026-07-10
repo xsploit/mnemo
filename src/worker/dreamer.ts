@@ -30,6 +30,9 @@ export interface DreamReport {
   selfEvolution: string[];
 }
 
+let sleepTail: Promise<unknown> = Promise.resolve();
+const activeBySubject = new Map<string, Promise<DreamReport>>();
+
 /**
  * One full sleep cycle for a single subject. This is the separate "worker"
  * brain: it never talks to the user, it only rewrites the bot's memory.
@@ -40,7 +43,21 @@ export interface DreamReport {
  *   4. DREAM      write a first-person diary entry weaving it together
  *   5. FORGET     prune faded low-importance episodic memories
  */
-export async function runSleepCycle(subjectId: string, opts: { lookbackHours?: number } = {}): Promise<DreamReport> {
+export function runSleepCycle(subjectId: string, opts: { lookbackHours?: number } = {}): Promise<DreamReport> {
+  const active = activeBySubject.get(subjectId);
+  if (active) return active;
+  const cycle = sleepTail.then(() => runSleepCycleInternal(subjectId, opts));
+  sleepTail = cycle.catch(() => undefined);
+  activeBySubject.set(subjectId, cycle);
+  void cycle
+    .finally(() => {
+      if (activeBySubject.get(subjectId) === cycle) activeBySubject.delete(subjectId);
+    })
+    .catch(() => {});
+  return cycle;
+}
+
+async function runSleepCycleInternal(subjectId: string, opts: { lookbackHours?: number }): Promise<DreamReport> {
   const cycleId = crypto.randomUUID();
   const store = await getStore();
   const lookbackHours = opts.lookbackHours ?? 48;

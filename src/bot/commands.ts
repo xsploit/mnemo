@@ -27,7 +27,7 @@ import { memoryPrivacy } from '../memory/privacy.js';
 import { isUnsafeMemoryPayload } from '../memory/safety.js';
 import { embedOne } from '../llm/embeddings.js';
 import { runSleepCycle, type DreamReport } from '../worker/dreamer.js';
-import { clearDirty } from '../worker/activity.js';
+import { activityVersion, clearDirty } from '../worker/activity.js';
 import { forget } from '../cognition/forget.js';
 import { config } from '../config.js';
 import { getRepliesPaused, getRespondToBots, setRepliesPaused, setRespondToBots } from './botChatPolicy.js';
@@ -718,8 +718,9 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
         await i.editReply(memoryPausedReply());
         return;
       }
+      const throughVersion = activityVersion(subjectId);
       const report = await runSleepCycle(subjectId, { lookbackHours: 72 });
-      if (report.observations > 0) clearDirty(subjectId);
+      if (report.observations > 0) clearDirty(subjectId, throughVersion);
       if (report.observations === 0) {
         await i.editReply("Nothing new to sleep on — we haven't talked recently.");
         return;
@@ -741,8 +742,9 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
         return;
       }
       const lookbackHours = clampInteger(i.options.getInteger('lookback_hours') ?? 72, 1, 720);
+      const throughVersion = activityVersion(targetSubjectId);
       const report = await runSleepCycle(targetSubjectId, { lookbackHours });
-      if (report.observations > 0) clearDirty(targetSubjectId);
+      if (report.observations > 0) clearDirty(targetSubjectId, throughVersion);
       await i.editReply({ embeds: [dreamReportEmbed(report, `Memory worker: ${target.username}`)] });
       return;
     }

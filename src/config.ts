@@ -261,7 +261,7 @@ export const config = {
     cognitivePrepass: bool('DEVELOPMENT_COGNITIVE_PREPASS', bool('INNER_VOICE', true)),
     /** Adaptive uses the model only for socially complex turns plus a stable sample. */
     cognitiveMode: (() => {
-      const value = opt('DEVELOPMENT_COGNITIVE_MODE', 'adaptive').toLowerCase();
+      const value = opt('DEVELOPMENT_COGNITIVE_MODE', 'deterministic').toLowerCase();
       return value === 'always' || value === 'deterministic' ? value : 'adaptive';
     })() as 'adaptive' | 'always' | 'deterministic',
     cognitiveSampleRate: Math.max(0, Math.min(1, num('DEVELOPMENT_COGNITIVE_SAMPLE_RATE', 0.05))),

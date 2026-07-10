@@ -1,19 +1,13 @@
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { compileCognitiveState } from '../development/cognitiveState.js';
-import { config } from '../config.js';
-import { models } from '../llm/gateway.js';
+import { gateway } from '../llm/gateway.js';
 
 const forceModelPath = process.argv.includes('--model');
-const useDirectGlm = process.argv.includes('--glm');
-if (useDirectGlm) {
-  if (!config.zai.apiKey) throw new Error('ZAI_API_KEY is required for --glm.');
-  const provider = createOpenAICompatible({
-    name: 'zai-development-smoke',
-    baseURL: config.zai.baseURL,
-    apiKey: config.zai.apiKey,
-  });
-  models.json = provider('glm-4.5-flash');
-}
+const selectedModel = process.argv.includes('--pro')
+  ? 'deepseek/deepseek-v4-pro'
+  : process.argv.includes('--flash')
+    ? 'deepseek/deepseek-v4-flash'
+    : null;
+const benchmark = process.argv.includes('--benchmark');
 const started = performance.now();
 const result = await compileCognitiveState({
   subjectId: 'smoke-user',
@@ -44,13 +38,16 @@ const result = await compileCognitiveState({
   affinity: null,
   momentum: null,
   persist: false,
+  model: selectedModel ? gateway(selectedModel) : undefined,
+  timeoutMs: benchmark ? 60_000 : undefined,
+  forceModel: Boolean(selectedModel),
 });
 
 console.log(
   JSON.stringify(
     {
       compiler: result.state.compiler,
-      route: useDirectGlm ? 'zai:glm-4.5-flash' : 'configured-json-model',
+      route: selectedModel ?? 'configured-deepseek-json-model',
       topic: result.state.scene.topic,
       intent: result.state.userModel.likelyIntent,
       responseGoal: result.state.response.primaryGoal,

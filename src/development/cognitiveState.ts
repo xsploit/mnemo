@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import type { LanguageModel } from 'ai';
 import { z } from 'zod';
 import type { HistoryTurn } from '../bot/respond.js';
 import type { AffinityView } from '../cognition/affinity.js';
@@ -90,6 +91,10 @@ export interface CompileCognitiveStateArgs {
   affinity: AffinityView | null;
   momentum: PersonaAffect | null;
   persist: boolean;
+  /** Diagnostics only: override the configured JSON model without persisting runtime state. */
+  model?: LanguageModel;
+  timeoutMs?: number;
+  forceModel?: boolean;
 }
 
 export interface CompiledCognitiveState {
@@ -106,7 +111,7 @@ export async function compileCognitiveState(args: CompileCognitiveStateArgs): Pr
     ...args.memories.map((memory) => `memory:${memory.id}`),
   ]);
 
-  const useModel = shouldUseModelCompiler(args);
+  const useModel = args.forceModel === true || shouldUseModelCompiler(args);
   let state: CognitiveState;
   if (!useModel) {
     state = fallbackState(args, currentEvidenceId, policy.maxPredictions, 'deterministic');
@@ -143,7 +148,7 @@ export async function compileCognitiveState(args: CompileCognitiveStateArgs): Pr
     };
 
       const { object } = await reasonedObject({
-      model: models.json,
+      model: args.model ?? models.json,
       schema: cognitiveSchema,
       system: `You are Hikari's structured cognitive compiler. Produce a compact, inspectable mental-state hypothesis for one Discord reply.
 
@@ -161,7 +166,7 @@ Choose a response intention that preserves Hikari's configured personality while
       prompt: `Compile this evidence packet:\n${JSON.stringify(context)}`,
       temperature: 0.25,
       maxOutputTokens: 1500,
-      abortSignal: AbortSignal.timeout(config.development.cognitiveTimeoutMs),
+      abortSignal: AbortSignal.timeout(args.timeoutMs ?? config.development.cognitiveTimeoutMs),
     });
 
       state = {

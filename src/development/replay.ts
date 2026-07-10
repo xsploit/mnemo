@@ -6,6 +6,7 @@ import { renderEvidencePacket, renderHistoryXml, type HistoryTurn } from '../bot
 import { config } from '../config.js';
 import { AffinityStore } from '../cognition/affinity.js';
 import { meetsSelfDeltaThreshold } from '../cognition/selfReflect.js';
+import { activityVersion, clearDirty, dueForDreaming, noteActivity } from '../worker/activity.js';
 import type { ScoredMemory } from '../memory/types.js';
 import { DevelopmentEventStore, utilityKey } from './eventStore.js';
 import { classifyFollowup, rewardForSignal } from './outcomes.js';
@@ -62,6 +63,16 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
   assert.match(historyXml, /from_user="hikari" display_name="Hikari" bot="true" self="true"/);
   assert.ok(historyXml.includes('&lt;b&gt;one&lt;/b&gt;'));
   checks.speakerAttribution = true;
+
+  const activitySubject = `replay-activity-${Date.now()}`;
+  noteActivity(activitySubject, 'channel-1');
+  const throughVersion = activityVersion(activitySubject);
+  noteActivity(activitySubject, 'channel-1');
+  assert.equal(clearDirty(activitySubject, throughVersion), false);
+  assert.ok(dueForDreaming(0).includes(activitySubject));
+  assert.equal(clearDirty(activitySubject, activityVersion(activitySubject)), true);
+  assert.ok(!dueForDreaming(0).includes(activitySubject));
+  checks.activityGenerationSafety = true;
 
   const evidencePacket = renderEvidencePacket({
     speakerBlock: '<current_speaker username="alpha" display_name="Alpha" />',

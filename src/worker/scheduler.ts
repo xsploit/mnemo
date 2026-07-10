@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { runSleepCycle, type DreamReport } from './dreamer.js';
-import { clearDirty, dueForDreaming } from './activity.js';
+import { activityVersion, clearDirty, dueForDreaming } from './activity.js';
 
 const log = logger('scheduler');
 
@@ -29,8 +29,9 @@ export function startDreamLoop(onDream?: OnDream): () => void {
       if (due.length) log.info(`dreaming for ${due.length} subject(s): ${due.join(', ')}`);
       for (const subjectId of due) {
         try {
+          const throughVersion = activityVersion(subjectId);
           const report = await runSleepCycle(subjectId);
-          clearDirty(subjectId);
+          clearDirty(subjectId, throughVersion);
           if (report.observations > 0) onDream?.(report);
         } catch (e: any) {
           log.error(`sleep cycle failed for ${subjectId}`, e?.message);

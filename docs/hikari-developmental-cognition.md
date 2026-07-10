@@ -59,6 +59,8 @@ The cognitive prepass replaces the current free-form inner voice. It produces in
 
 Failure is non-fatal. The public response falls back to the existing persona, memory, affinity, and mood path.
 
+The live default is deterministic because a 2026-07-10 same-packet benchmark measured DeepSeek V4 Flash at 14.81s for valid schema output, while V4 Pro took 38.28s across retries and produced no JSON object. Flash remains the structured/dream worker model; Pro remains the main character model. Adaptive model compilation is available for explicit experiments but is not allowed to impose that serial latency on ordinary chat.
+
 ## Sleep Loop
 
 The existing `INGEST -> CONSOLIDATE -> REFLECT -> DREAM -> FORGET` loop becomes:
