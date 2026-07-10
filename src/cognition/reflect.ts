@@ -24,7 +24,7 @@ const reflectionSchema = z.object({
     z.object({
       insight: z.string(),
       importance: z.number().min(1).max(10),
-      basis: z.array(z.number()).describe('Indices of the memories that support this insight.'),
+      basis: z.array(z.number().int().min(0)).min(1).describe('Indices of the memories that support this insight.'),
     }),
   ),
 });
@@ -72,9 +72,13 @@ Voice contract:
 
   const created: MemoryRecord[] = [];
   for (const ins of object.insights) {
-    const sources = ins.basis
+    const sources = [...new Set(ins.basis
       .map((i) => memories[i]?.id)
-      .filter((x): x is string => Boolean(x));
+      .filter((x): x is string => Boolean(x)))];
+    if (sources.length === 0) {
+      log.warn(`subject=${subjectId} rejected unsupported reflection insight`);
+      continue;
+    }
     const rec = await store.insert({
       subjectId,
       kind: 'reflection',

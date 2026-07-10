@@ -24,6 +24,7 @@ const opSchema = z.object({
         .nullable()
         .describe('For UPDATE/DELETE: the id of the existing fact being changed.'),
       importance: z.number().min(1).max(10),
+      basis: z.array(z.number().int().min(0)).min(1).max(20).describe('Indices of new observations supporting this operation.'),
     }),
   ),
 });
@@ -59,32 +60,50 @@ export async function consolidate(
         'From new observations, distill durable facts. Reconcile them against existing facts: ' +
         'ADD genuinely new facts; UPDATE when a fact\'s truth has changed (cite the old id); ' +
         'DELETE when an existing fact is now false; NOOP for fleeting chatter. ' +
+        'Every operation must cite the supporting new-observation indices in basis. ' +
         'Prefer few, high-signal facts over many trivial ones.',
       prompt: `New observations:\n${obsText}\n\nExisting facts:\n${factText}`,
       temperature: 0.2,
     }));
   } catch (e: any) {
-    reasoning = `consolidation model failed; episodic memories retained: ${e?.message ?? e}`;
-    await store.markProcessed(observations.map((o) => o.id));
-    log.warn(`subject=${subjectId} consolidation skipped; marked ${observations.length} obs processed`, e?.message);
+    reasoning = `consolidation model failed; episodic memories remain retryable: ${e?.message ?? e}`;
+    log.warn(`subject=${subjectId} consolidation skipped; retained ${observations.length} unprocessed observation(s)`, e?.message);
     return { added: [], updated: 0, deleted: 0, reasoning };
   }
 
   const result: ConsolidationResult = { added: [], updated: 0, deleted: 0, reasoning };
   const now = new Date();
+  const visibleFactIds = new Set(existingFacts.map((fact) => fact.id));
+  const knownContents = new Set(existingFacts.filter((fact) => !fact.validTo).map((fact) => normalizeFact(fact.content)));
+  let operationFailures = 0;
 
   for (const op of object.operations) {
     try {
       if (op.op === 'NOOP') continue;
+      const sourceIds = [...new Set(op.basis.map((index) => observations[index]?.id).filter((id): id is string => Boolean(id)))];
+      if (sourceIds.length === 0) {
+        operationFailures += 1;
+        log.warn(`rejected ${op.op} without a valid observation basis`);
+        continue;
+      }
 
       if (op.op === 'DELETE' && op.targetId) {
+        if (!visibleFactIds.has(op.targetId)) {
+          operationFailures += 1;
+          log.warn(`rejected DELETE with unknown target ${op.targetId}`);
+          continue;
+        }
         await store.expire(op.targetId, now);
         result.deleted++;
         continue;
       }
 
       if (op.op === 'UPDATE' && op.targetId) {
-        await store.expire(op.targetId, now); // close the old fact's validity window
+        if (!visibleFactIds.has(op.targetId)) {
+          operationFailures += 1;
+          log.warn(`rejected UPDATE with unknown target ${op.targetId}`);
+          continue;
+        }
         const rec = await store.insert({
           subjectId,
           kind: 'semantic',
@@ -93,14 +112,19 @@ export async function consolidate(
           embedding: await embedOne(op.fact),
           supersedes: op.targetId,
           reasoning,
+          sources: sourceIds,
           meta: { op: 'UPDATE' },
         });
+        await store.expire(op.targetId, now); // close the old fact only after its replacement exists
         result.added.push(rec);
+        knownContents.add(normalizeFact(op.fact));
         result.updated++;
         continue;
       }
 
       if (op.op === 'ADD') {
+        const normalized = normalizeFact(op.fact);
+        if (!normalized || knownContents.has(normalized)) continue;
         const rec = await store.insert({
           subjectId,
           kind: 'semantic',
@@ -108,18 +132,29 @@ export async function consolidate(
           importance: op.importance,
           embedding: await embedOne(op.fact),
           reasoning,
+          sources: sourceIds,
           meta: { op: 'ADD' },
         });
         result.added.push(rec);
+        knownContents.add(normalized);
       }
     } catch (e: any) {
+      operationFailures += 1;
       log.warn(`op ${op.op} failed`, e?.message);
     }
   }
 
-  await store.markProcessed(observations.map((o) => o.id));
+  if (operationFailures === 0) {
+    await store.markProcessed(observations.map((o) => o.id));
+  } else {
+    log.warn(`subject=${subjectId} left ${observations.length} observation(s) retryable after ${operationFailures} failed operation(s)`);
+  }
   log.info(
     `subject=${subjectId} +${result.added.length} ~${result.updated} -${result.deleted} from ${observations.length} obs`,
   );
   return result;
+}
+
+function normalizeFact(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim().replace(/[.!?]+$/g, '');
 }
