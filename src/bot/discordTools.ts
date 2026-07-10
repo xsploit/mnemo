@@ -13,6 +13,13 @@ import {
 import { z } from 'zod';
 import { config } from '../config.js';
 import { pacificTimeSnapshot } from '../timeContext.js';
+import {
+  createOwnerGuildInvite,
+  deliverOwnerInvite,
+  inspectBotGuild,
+  listBotGuilds,
+  readBotGuildActivity,
+} from './guildOps.js';
 
 export interface DiscordToolScope {
   channelId: string;
@@ -69,7 +76,15 @@ export function createDiscordReadTools(scope: DiscordToolScope): ToolSet {
                 'discord_get_member',
               ]
             : []),
-          ...(isOwner(scope.authorId) ? ['discord_list_bot_guilds', 'discord_get_application_info'] : []),
+          ...(isOwner(scope.authorId)
+            ? [
+                'discord_list_bot_guilds',
+                'discord_inspect_bot_guild',
+                'discord_read_bot_guild_activity',
+                'discord_create_owner_invite',
+                'discord_get_application_info',
+              ]
+            : []),
         ],
       }),
     }),
@@ -475,8 +490,59 @@ function addOwnerReadTools(tools: ToolSet, scope: DiscordToolScope): void {
       limit: z.number().int().min(1).max(100).default(50),
     }),
     execute: async ({ limit }) => {
-      const guilds = [...(scope.client?.guilds.cache.values() ?? [])].slice(0, limit).map(serializeGuild);
+      const guilds = scope.client ? await listBotGuilds(scope.client, limit) : [];
       return { guilds, count: guilds.length };
+    },
+  });
+  tools.discord_inspect_bot_guild = tool({
+    description:
+      'Owner-only read-only. Inspect any guild this bot is in, including bot permissions, roles, and per-channel read/send/invite access.',
+    inputSchema: z.object({
+      guild_id: z.string().min(1).max(40).describe('Guild id from discord_list_bot_guilds'),
+    }),
+    execute: async ({ guild_id }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      return inspectBotGuild(scope.client, guild_id);
+    },
+  });
+  tools.discord_read_bot_guild_activity = tool({
+    description:
+      'Owner-only read-only. Read bounded recent activity across readable channels in any guild this bot is in. Includes human and bot messages.',
+    inputSchema: z.object({
+      guild_id: z.string().min(1).max(40).describe('Guild id from discord_list_bot_guilds'),
+      channel_limit: z.number().int().min(1).max(20).default(8),
+      messages_per_channel: z.number().int().min(1).max(25).default(10),
+    }),
+    execute: async ({ guild_id, channel_limit, messages_per_channel }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      return readBotGuildActivity(scope.client, guild_id, channel_limit, messages_per_channel);
+    },
+  });
+  tools.discord_create_owner_invite = tool({
+    description:
+      'Owner-only write. Create a one-use expiring invite in another guild and DM it to the configured owner. Never repeat the invite URL in a public reply.',
+    inputSchema: z.object({
+      guild_id: z.string().min(1).max(40).describe('Target guild id from discord_list_bot_guilds'),
+      channel_id: z.string().min(1).max(40).optional().describe('Optional invite channel id'),
+      max_age_hours: z.number().int().min(1).max(168).default(24),
+    }),
+    execute: async ({ guild_id, channel_id, max_age_hours }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      const invite = await createOwnerGuildInvite(scope.client, guild_id, scope.authorId, {
+        ...(channel_id ? { channelId: channel_id } : {}),
+        maxAgeSeconds: max_age_hours * 3600,
+        maxUses: 1,
+      });
+      const guildName = String(invite.guild.name ?? guild_id);
+      await deliverOwnerInvite(scope.client, scope.authorId, invite.url, guildName);
+      return {
+        created: true,
+        deliveredToOwnerDm: true,
+        guild: invite.guild,
+        channel: invite.channel,
+        maxAgeSeconds: invite.maxAgeSeconds,
+        maxUses: invite.maxUses,
+      };
     },
   });
   tools.discord_get_application_info = tool({
@@ -635,7 +701,7 @@ function assertSameGuildOrOwner(scope: DiscordToolScope, channel: unknown): void
 
 function canReadHistory(scope: DiscordToolScope, channel: unknown): boolean {
   if (!isMessageFetchChannel(channel)) return false;
-  const botSubject = scope.guild?.members.me ?? scope.client?.user;
+  const botSubject = botSubjectForChannel(scope, channel);
   const botPerms = permissionsFor(channel, botSubject);
   if (!hasReadHistory(botPerms)) return false;
   if (isOwner(scope.authorId)) return true;
@@ -644,7 +710,7 @@ function canReadHistory(scope: DiscordToolScope, channel: unknown): boolean {
 }
 
 function assertCanViewChannel(scope: DiscordToolScope, channel: unknown): void {
-  const botSubject = scope.guild?.members.me ?? scope.client?.user;
+  const botSubject = botSubjectForChannel(scope, channel);
   if (!hasPermission(permissionsFor(channel, botSubject), 'ViewChannel')) {
     throw new Error(`Bot cannot view channel ${stringProp(channel, 'id') ?? scope.channelId}.`);
   }
@@ -652,6 +718,12 @@ function assertCanViewChannel(scope: DiscordToolScope, channel: unknown): void {
   if (!hasPermission(permissionsFor(channel, scope.authorId), 'ViewChannel')) {
     throw new Error(`Requester cannot view channel ${stringProp(channel, 'id') ?? scope.channelId}.`);
   }
+}
+
+function botSubjectForChannel(scope: DiscordToolScope, channel: unknown): unknown {
+  const guildId = stringProp(channel, 'guildId') ?? stringProp(objectProp(channel, 'guild'), 'id');
+  const targetGuild = guildId ? scope.client?.guilds.cache.get(guildId) : null;
+  return targetGuild?.members.me ?? scope.client?.user?.id ?? null;
 }
 
 function permissionsFor(channel: unknown, subject: unknown): PermissionsBitField | null {

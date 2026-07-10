@@ -84,6 +84,13 @@ import {
   setCodexBridgePaused,
 } from './codexBridge.js';
 import { formatShitlistReply, formatShitlistStatus, shitlistStore } from './shitlist.js';
+import {
+  createOwnerGuildInvite,
+  deliverOwnerInvite,
+  inspectBotGuild,
+  listBotGuilds,
+  readBotGuildActivity,
+} from './guildOps.js';
 import { getDevelopmentStore } from '../development/eventStore.js';
 import { computeObservedDevelopmentMetrics } from '../development/observedMetrics.js';
 import { getEffectiveDevelopmentPolicy } from '../development/effectivePolicy.js';
@@ -279,6 +286,38 @@ export const commandData = [
     .setDescription('Admin/owner: list server or channel invites if visible.')
     .addChannelOption((o) => o.setName('channel').setDescription('Optional channel filter.'))
     .addIntegerOption((o) => o.setName('limit').setDescription('Invites to show, from 1 to 100.').setMinValue(1).setMaxValue(100)),
+  new SlashCommandBuilder()
+    .setName('guildops')
+    .setDescription('Owner-only: inspect any server this bot is in or create a recovery invite.')
+    .addSubcommand((s) =>
+      s
+        .setName('list')
+        .setDescription('List every server this bot is currently in.')
+        .addIntegerOption((o) => o.setName('limit').setDescription('Servers to show, from 1 to 100.').setMinValue(1).setMaxValue(100)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('inspect')
+        .setDescription('Inspect bot permissions, channels, and roles in another server.')
+        .addStringOption((o) => o.setName('guild_id').setDescription('Target server id.').setRequired(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('activity')
+        .setDescription('Read bounded recent activity in readable channels of another server.')
+        .addStringOption((o) => o.setName('guild_id').setDescription('Target server id.').setRequired(true))
+        .addIntegerOption((o) => o.setName('channels').setDescription('Active channels to read, from 1 to 20.').setMinValue(1).setMaxValue(20))
+        .addIntegerOption((o) => o.setName('messages').setDescription('Messages per channel, from 1 to 25.').setMinValue(1).setMaxValue(25)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('invite')
+        .setDescription('Create a one-use expiring owner invite in another server.')
+        .addStringOption((o) => o.setName('guild_id').setDescription('Target server id.').setRequired(true))
+        .addStringOption((o) => o.setName('channel_id').setDescription('Optional invite channel id.'))
+        .addIntegerOption((o) => o.setName('hours').setDescription('Expiry in hours, from 1 to 168.').setMinValue(1).setMaxValue(168))
+        .addBooleanOption((o) => o.setName('dm').setDescription('Also DM the invite to you. Defaults to true.')),
+    ),
   new SlashCommandBuilder()
     .setName('summary')
     .setDescription('Summarize recent messages in this channel.')
@@ -1138,6 +1177,70 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
         .slice(0, limit)
         .map((state) => `user=${state.id} channel=${state.channel?.name ?? state.channelId ?? 'none'} selfMute=${state.selfMute ? 'yes' : 'no'} serverMute=${state.serverMute ? 'yes' : 'no'} streaming=${state.streaming ? 'yes' : 'no'}`);
       await editLongReply(i, states.length ? states.join('\n') : 'No visible voice states found.');
+      return;
+    }
+
+    case 'guildops': {
+      await i.deferReply({ ephemeral: true });
+      if (!isOwner(i.user.id)) {
+        await i.editReply('Only configured owners can inspect other bot guilds or create owner invites.');
+        return;
+      }
+
+      const action = i.options.getSubcommand(true);
+      try {
+        if (action === 'list') {
+          const guilds = await listBotGuilds(i.client, clampInteger(i.options.getInteger('limit') ?? 100, 1, 100));
+          await editLongReply(i, renderGuildList(guilds));
+          return;
+        }
+
+        const guildId = i.options.getString('guild_id', true);
+        if (action === 'inspect') {
+          await editLongReply(i, renderGuildInspection(await inspectBotGuild(i.client, guildId)));
+          return;
+        }
+        if (action === 'activity') {
+          const result = await readBotGuildActivity(
+            i.client,
+            guildId,
+            clampInteger(i.options.getInteger('channels') ?? 8, 1, 20),
+            clampInteger(i.options.getInteger('messages') ?? 10, 1, 25),
+          );
+          await editLongReply(i, renderGuildActivity(result));
+          return;
+        }
+        if (action === 'invite') {
+          const channelId = i.options.getString('channel_id')?.trim() || undefined;
+          const hours = clampInteger(i.options.getInteger('hours') ?? 24, 1, 168);
+          const invite = await createOwnerGuildInvite(i.client, guildId, i.user.id, {
+            ...(channelId ? { channelId } : {}),
+            maxAgeSeconds: hours * 3600,
+            maxUses: 1,
+          });
+          let dmStatus = 'not requested';
+          if (i.options.getBoolean('dm') ?? true) {
+            try {
+              await deliverOwnerInvite(i.client, i.user.id, invite.url, recordText(invite.guild, 'name', guildId));
+              dmStatus = 'sent';
+            } catch (error) {
+              dmStatus = `failed: ${error instanceof Error ? error.message : String(error)}`;
+            }
+          }
+          await i.editReply(
+            [
+              `Invite created for ${recordText(invite.guild, 'name', guildId)} (${guildId}).`,
+              `channel=${recordText(invite.channel, 'name', 'unknown')} (${recordText(invite.channel, 'id', 'unknown')})`,
+              `expires=${hours}h uses=${invite.maxUses} dm=${dmStatus}`,
+              invite.url,
+            ].join('\n'),
+          );
+          return;
+        }
+        await i.editReply('Unknown guild operation.');
+      } catch (error) {
+        await i.editReply(error instanceof Error ? error.message : 'Guild operation failed.');
+      }
       return;
     }
 
@@ -2237,6 +2340,85 @@ function uniqueModelInfos(values: Array<GatewayModelInfo | undefined>): GatewayM
 
 function truncateSelectText(value: string, maxChars: number): string {
   return value.length > maxChars ? `${value.slice(0, maxChars - 3)}...` : value;
+}
+
+function renderGuildList(guilds: Record<string, unknown>[]): string {
+  if (guilds.length === 0) return 'This bot is not currently in any cached guilds.';
+  return [
+    `Bot guilds (${guilds.length}):`,
+    ...guilds.map(
+      (guild) =>
+        `- ${recordText(guild, 'name', 'unknown')} id=${recordText(guild, 'id', 'unknown')} members=${recordText(guild, 'memberCount', '?')} owner=${recordText(guild, 'ownerId', 'unknown')} channels=${recordText(guild, 'channelCount', '?')}`,
+    ),
+  ].join('\n');
+}
+
+function renderGuildInspection(result: Record<string, unknown>): string {
+  const guild = recordObject(result, 'guild');
+  const botMember = recordObject(result, 'botMember');
+  const channels = recordObjects(result, 'channels');
+  const roles = recordObjects(result, 'roles');
+  return [
+    `${recordText(guild, 'name', 'unknown')} (${recordText(guild, 'id', 'unknown')})`,
+    `owner=${recordText(guild, 'ownerId', 'unknown')} members=${recordText(guild, 'memberCount', '?')} joined=${recordText(guild, 'joinedAt', 'unknown')}`,
+    `botRole=${recordText(botMember, 'highestRole', 'unknown')} guildPermissions=${recordStrings(botMember, 'permissions').join(', ') || 'none'}`,
+    '',
+    `Channels (${channels.length}):`,
+    ...channels.map(
+      (channel) =>
+        `- ${recordText(channel, 'name', 'unknown')} id=${recordText(channel, 'id', 'unknown')} type=${recordText(channel, 'type', '?')} view=${recordText(channel, 'view', 'false')} history=${recordText(channel, 'readHistory', 'false')} send=${recordText(channel, 'sendMessages', 'false')} invite=${recordText(channel, 'createInvite', 'false')}`,
+    ),
+    '',
+    `Roles (${roles.length}):`,
+    ...roles.map(
+      (role) =>
+        `- ${recordText(role, 'name', 'unknown')} id=${recordText(role, 'id', 'unknown')} position=${recordText(role, 'position', '?')} managed=${recordText(role, 'managed', 'false')}`,
+    ),
+  ].join('\n');
+}
+
+function renderGuildActivity(result: Record<string, unknown>): string {
+  const guild = recordObject(result, 'guild');
+  const activity = recordObjects(result, 'activity');
+  const lines = [`Recent readable activity for ${recordText(guild, 'name', 'unknown')} (${recordText(guild, 'id', 'unknown')}):`];
+  for (const entry of activity) {
+    const channel = recordObject(entry, 'channel');
+    lines.push('', `#${recordText(channel, 'name', 'unknown')} (${recordText(channel, 'id', 'unknown')})`);
+    const error = recordText(entry, 'error', '');
+    if (error) lines.push(`- read error: ${error}`);
+    const messages = recordObjects(entry, 'messages');
+    if (messages.length === 0 && !error) lines.push('- no recent messages');
+    for (const message of messages) {
+      const author = recordObject(message, 'author');
+      const botSuffix = recordText(author, 'bot', 'false') === 'true' ? ' [bot]' : '';
+      lines.push(
+        `- ${recordText(message, 'timestamp', 'unknown')} ${recordText(author, 'displayName', recordText(author, 'username', 'unknown'))}${botSuffix}: ${recordText(message, 'content', '(no text)')}`,
+      );
+    }
+  }
+  return lines.join('\n');
+}
+
+function recordObject(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = record[key];
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function recordObjects(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
+  const value = record[key];
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+    : [];
+}
+
+function recordStrings(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function recordText(record: Record<string, unknown>, key: string, fallback: string): string {
+  const value = record[key];
+  return value == null ? fallback : String(value);
 }
 
 async function editLongReply(i: ChatInputCommandInteraction, content: string): Promise<void> {
