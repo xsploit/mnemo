@@ -39,7 +39,7 @@ export const gatewayProviderOptions = {
 /**
  * Optional GLM / Z.ai text provider (OpenAI-compatible). When LLM_PROVIDER=zai,
  * chat/dream/json route here instead of the Vercel gateway — cheap/free on your
- * GLM sub. Embeddings always stay on the Vercel gateway (preserves 1536-dim vectors).
+ * GLM sub. Embeddings are selected independently and default to the local model.
  */
 const zaiProvider = config.zai.apiKey
   ? createOpenAICompatible({ name: 'zai', baseURL: config.zai.baseURL, apiKey: config.zai.apiKey })
@@ -117,7 +117,7 @@ export const models: {
   dream: textModel(modelIds.dream),
   /** Structured JSON cognition: importance, consolidation, reflection (JSON_MODEL / GLM_JSON_MODEL). */
   json: textModel(modelIds.json),
-  /** Embeddings for the memory stream — always Vercel (EMBEDDING_MODEL). */
+  /** Vercel embedding handle, used only when EMBED_PROVIDER=vercel. */
   embed: gateway.textEmbeddingModel(modelIds.embed),
 };
 

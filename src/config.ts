@@ -77,6 +77,7 @@ const modelDefaults = {
     json: opt('GLM_CODING_JSON_MODEL', 'zai:glm-4.5-flash'),
   },
 } as const;
+const embedProvider = (opt('EMBED_PROVIDER', 'local').toLowerCase() === 'vercel' ? 'vercel' : 'local') as 'vercel' | 'local';
 
 export const config = {
   discord: {
@@ -193,7 +194,7 @@ export const config = {
     json: modelDefaults[llmProvider].json,
     // The Vercel embedding model id, used only if config.embed.provider is 'vercel'.
     embed: opt('EMBEDDING_MODEL', opt('MODEL_EMBED', 'openai/text-embedding-3-small')),
-    embedDim: num('EMBED_DIM', 1536),
+    embedDim: num('EMBED_DIM', embedProvider === 'local' ? 384 : 1536),
   },
   vc: {
     /** Streaming fast path: streamText → per-sentence Fish TTS → immediate playback. */
@@ -247,7 +248,7 @@ export const config = {
   embed: {
     // Local (transformers.js) is the default, unconditionally — no Vercel spend or
     // outage can ever break memory retrieval. Set EMBED_PROVIDER=vercel to opt back in.
-    provider: (opt('EMBED_PROVIDER', 'local').toLowerCase() === 'vercel' ? 'vercel' : 'local') as 'vercel' | 'local',
+    provider: embedProvider,
     /** When on Vercel, fall back to the local model if the embedding call fails. */
     localBackup: bool('EMBED_LOCAL_BACKUP', true),
     /** Local model (downloaded once, runs offline). 384-dim by default. */

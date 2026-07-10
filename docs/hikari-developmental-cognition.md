@@ -1,6 +1,6 @@
 # Hikari Developmental Cognition Lab
 
-Status: experimental implementation target. Hikari only. Neuro remains unchanged until the replay suite shows a measurable win.
+Status: experimental implementation active in Hikari. Neuro remains unchanged until observed Discord outcomes and human A/B review show a measurable win.
 
 ## Objective
 
@@ -89,6 +89,7 @@ Shadow adapters receive the same committed interaction event after the live turn
 Initial adapters:
 
 - `local-baseline`: exercises the adapter and evaluation path with no service dependency.
+- `local-diversity`: reranks the authoritative candidates with lexical overlap and memory-kind diversity, then logs overlap without affecting the live prompt.
 - `letta`: optional later, enabled only by explicit configuration and credentials.
 
 Other systems such as A-MEM, MIRIX, or MemOS should first be evaluated through the same adapter contract rather than replacing Hikari's store.
@@ -106,11 +107,11 @@ Each candidate is replayed against a fixed fixture set and compared with the cur
 - bounded latency and context growth;
 - a measurable improvement in the candidate's target metric.
 
-The first implementation records candidates and decisions but does not automatically modify `.env` or source files.
+Promoted decisions are projected from the append-only log into a small allowlist of subject-scoped runtime values. They never modify `.env`, source files, the persona, or another user's policy. Current allowlisted values are utility weight and maximum prediction count.
 
 ## Evaluation
 
-The deterministic replay suite measures:
+The deterministic replay suite verifies control-plane invariants:
 
 - exact speaker attribution
 - temporal recall and stale-fact handling
@@ -119,11 +120,10 @@ The deterministic replay suite measures:
 - utility update bounds and relevance gating
 - relationship change evidence thresholds
 - identity change evidence thresholds
-- persona-state packet stability
 - append-only event parseability and idempotency
 - prompt size and local latency
 
-Human A/B evaluation adds character consistency, natural callbacks, emotional appropriateness, surprise, non-sycophancy, and overall "feels more real" preference.
+It does not report synthetic persona or grounding quality as if they were real observations. `eval:development:observed` separately reports real follow-ups, reactions, corrections, continuation, prediction precision/calibration, and utility updates; missing samples remain `n/a`. Human A/B evaluation still owns character consistency, natural callbacks, emotional appropriateness, surprise, non-sycophancy, and overall "feels more real" preference.
 
 ## Research Lineage
 

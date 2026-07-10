@@ -1,14 +1,15 @@
 # Hikari-mnemo
 
-An experimental Discord bot with a **dreaming, reflective, layered memory**. It talks to people, lays
-down raw observations as they happen, and then — while it's idle ("asleep") — a **separate worker brain**
-consolidates those observations into durable facts, reflects on them to form higher-level insights, writes
-a private first-person **diary entry**, and forgets the trivia. Every memory operation also stores the
-LLM's **reasoning trace** that produced it: *thoughts on thoughts*.
+An experimental Discord character with a **dreaming, reflective, developmental memory**. The wake path
+retrieves local memory, compiles an inspectable evidence-linked social/appraisal state, replies in character,
+and learns only from later Discord messages or reactions. While idle, a separate worker consolidates facts,
+reflects, rehearses explicitly imaginary futures, writes a first-person diary, proposes slow self-development,
+and forgets low-value trivia.
 
-Every model call routes through the **Vercel AI Gateway** — one key, every lab, automatic fallbacks,
-unified spend/observability. This local runtime is currently configured as **Hikari-chan** via XML persona
-prompting, while still keeping `BOT_NAME`, `BOT_PERSONA`, and `BOT_PERSONA_PATH` env-configurable.
+Text models can route through the **Vercel AI Gateway** or optional direct GLM lanes. Embeddings are local by
+default with `Xenova/all-MiniLM-L6-v2`, so ordinary memory retrieval has no embedding API cost. This runtime
+is configured as **Hikari-chan** through an XML persona, while `BOT_NAME`, `BOT_PERSONA`, and
+`BOT_PERSONA_PATH` remain configurable.
 
 Current practical surface:
 
@@ -18,10 +19,16 @@ Current practical surface:
 - Addressed chat turns can use read-only Discord tools for guild/channel/member/permission/thread/message context, including bot-authored history, while respecting requester visibility and owner/admin gates.
 - Text-like and PDF Discord attachments on addressed messages are read into the current turn as untrusted context, up to `DISCORD_TEXT_ATTACHMENT_MAX_BYTES` per file, `DISCORD_TEXT_ATTACHMENT_MAX_FILES` per message, `DISCORD_TEXT_ATTACHMENT_MAX_CHARS` total text, and `DISCORD_PDF_ATTACHMENT_MAX_PAGES` PDF pages. Image and voice/audio attachments are surfaced as metadata instead of silently disappearing. Recent history includes attachment metadata.
 - Live replies, dream diary, and reflection memories use the configured character voice, so Hikari should sound like the configured character instead of a generic analyst. Grounding notes improve factual care; they are not supposed to flatten the voice.
+- The old free-form inner voice has been replaced by a structured cognitive prepass: scene appraisal, uncertain user-model hypotheses, response intentions, and observable short-horizon predictions. It is planning state, not hidden factual memory.
+- Follow-up messages and reactions resolve earlier predictions and update bounded memory/strategy utility. Generated mood is expression telemetry and cannot reward itself or directly increase relationship trust.
+- Dream simulations live only in `data/development/events.jsonl`; they are labeled possibilities and never enter semantic or episodic recall as historical facts.
+- Self-model changes require distinct evidence across multiple sleep cycles. Retrieval/prompt policy candidates require replay improvement with no grounding, attribution, temporal, persona, latency, or context regression before a promoted decision can affect that user.
+- `DEVELOPMENT_SHADOW_PROVIDER=local-diversity` runs a free alternate retrieval reranker off-path. Shadow results are logged for comparison and never enter the live prompt.
 - When Fish TTS is enabled, Hikari can generate a private Fish Speech S2.1 voice script with sparse `[bracket]` emotion tags such as `[excited]`, `[laughing]`, `[sighing]`, `[whispering]`, `[surprised]`, `[sarcastic]`, `[break]`, `[soft tone]`, and `[gasping]`; Discord only sees the cleaned display text.
 - `/channels` lists readable server channels; `/roles` lists server roles; `/server` shows server metadata; `/botinfo` shows Hikari's Discord identity; `/permissions` shows channel/server permissions; `/cando` dry-runs Discord action permissions; `/auditperms` audits bot permissions for admins/owners; `/overwrites` reads channel permission overwrites; `/auditlog` reads recent audit-log entries; `/members` lets admins/owners read cached or searched member context.
 - `/history` reads or searches recent messages in the current channel, including bot messages when requested. `/fetchmsg` reads one specific readable message; `/threads` lists known threads; `/assets` lists custom emojis/stickers; `/voice` and `/invites` are admin/owner read-only diagnostics.
-- `/why` shows the latest answer trace for the channel: included recent history, retrieved memories, scores, model ID, prompt size, and answer text. Non-owners can only inspect their own latest trace.
+- `/why` shows the latest answer trace for the channel: recent history, retrieved memories, scores, cognitive state ID/goal, model ID, prompt size, and answer text. Non-owners can only inspect their own latest trace.
+- `/development` exposes status, current cognitive state, dream simulations, observed outcome metrics, learned utility, and policy-lab candidates. Missing real-world samples are shown as `n/a`, never as synthetic perfect scores.
 - `/codex status|features|results|ask|route|pause|resume|clear` is owner-only. `ask` and `route` write local Codex bridge request JSON files only; `results` reads recent result JSON files from the bridge outbox. It does not execute Codex from Discord.
 - `/summary` summarizes recent channel messages through live Discord history.
 - `/remember content:<text>` writes an explicit semantic memory, with the V2 memory-poisoning guard for behavior/policy instructions.
@@ -45,9 +52,9 @@ agent, the memory blocks, and the sleep-time background agent all live server-si
 Discord layer just formats channel context and streams responses. That's great if you want Letta to own
 the brain.
 
-mnemo instead **owns the whole memory brain itself** and routes raw model calls through the Vercel AI
-Gateway — no platform lock-in, and the memory algorithms (retrieval scoring, consolidation, reflection,
-dreaming, forgetting) are right here in the repo to hack on. From Letta's client we borrowed the good
+mnemo instead **owns the whole memory brain itself** and can route text calls through Vercel or GLM — no
+memory-platform lock-in, and the memory algorithms (retrieval scoring, outcome learning, consolidation,
+reflection, prospective dreaming, policy gating, forgetting) are in this repo. From Letta's client we borrowed the good
 ergonomics: **message batching**, **recent-channel-history context**, **message-type prefixes**, and
 **markdown-aware response splitting**.
 
@@ -62,10 +69,13 @@ ergonomics: **message batching**, **recent-channel-history context**, **message-
 | **Sleep-time compute** — a separate async agent that shares memory and rewrites it while idle | [Letta, arXiv:2504.13171](https://arxiv.org/abs/2504.13171) | [`scheduler.ts`](src/worker/scheduler.ts) + the `worker/` brain |
 | Fact ops **ADD / UPDATE / DELETE / NOOP** with temporal **validity windows** ("true as of…") | [Mem0](https://github.com/mem0ai/mem0) · [Zep / Graphiti](https://www.getzep.com/) | [`consolidate.ts`](src/cognition/consolidate.ts) |
 | Importance ("poignancy") scoring drives ranking + forgetting | Generative Agents | [`importance.ts`](src/cognition/importance.ts) |
+| Explicit mental-state hypotheses and short dialogue lookahead | [ToMAgent, arXiv:2509.22887](https://arxiv.org/abs/2509.22887) | [`cognitiveState.ts`](src/development/cognitiveState.ts), [`outcomes.ts`](src/development/outcomes.ts) |
+| Semantic candidate retrieval followed by learned utility | [MemRL, arXiv:2601.03192](https://arxiv.org/abs/2601.03192) | [`utility.ts`](src/development/utility.ts) |
+| Failure-driven memory-policy evolution | [EvolveMem, arXiv:2605.13941](https://arxiv.org/abs/2605.13941) · [SelfMem, arXiv:2607.03726](https://arxiv.org/abs/2607.03726) | [`policyLab.ts`](src/development/policyLab.ts), [`effectivePolicy.ts`](src/development/effectivePolicy.ts) |
 | Client ergonomics: batching, history context, markdown-safe splitting | [Letta Discord bot](https://github.com/letta-ai/letta-discord-bot-example) | [`client.ts`](src/bot/client.ts), [`format.ts`](src/bot/format.ts) |
 
 The synthesis: most memory libraries do *one* of these. mnemo wires them into a single loop where the
-**conversation path stays fast** and all the heavy cognition is deferred to a background sleep cycle.
+conversation path has one bounded structured prepass and heavy consolidation/rehearsal remains in the background.
 
 ---
 
@@ -74,8 +84,9 @@ The synthesis: most memory libraries do *one* of these. mnemo wires them into a 
 ```
                  ┌─────────────── Discord (gateway, persistent WS) ───────────────┐
    user msgs ─▶  │  bot/client.ts  ── batch burst ── fetch channel history         │
-                 │     └─ respond.ts ── retrieve memory ─▶ reply (models.chat)      │
-                 │            └─ (async) score importance + store EPISODIC obs       │
+                 │     └─ local retrieve + utility gate + cognitive state             │
+                 │            └─ reply ─▶ response link ─▶ observed outcome learning  │
+                 │            └─ async EPISODIC write + off-path shadow comparison     │
                  └───────────────────────────┬─────────────────────────────────────┘
                                              │ noteActivity(subject)
                                              ▼
@@ -84,13 +95,15 @@ The synthesis: most memory libraries do *one* of these. mnemo wires them into a 
    │     1. INGEST       unprocessed episodic observations                                      │
    │     2. CONSOLIDATE  → semantic facts   (ADD/UPDATE/DELETE, validity windows)  models.reasoner│
    │     3. REFLECT      → reflection insights (cite their basis)                  models.reasoner│
-   │     4. DREAM        → diary entry, first-person narrative                     models.reasoner│
-   │     5. FORGET       prune faded low-importance episodics                                    │
-   │  every step persists its reasoning trace  ── thoughts on thoughts ──                        │
+   │     4. REHEARSE     → evidence-linked possible futures (simulation-only)                    │
+   │     5. DREAM        → diary entry, first-person narrative                                   │
+   │     6. DEVELOP      → gated self-deltas + policy candidates                                 │
+   │     7. FORGET       prune faded low-importance episodics                                    │
    └───────────────────────────────────────────────────────────────────────────────────────────┘
                                              │
-                       MemoryStore (file-backed by default, Postgres+pgvector opt-in)
-              episodic · semantic · reflection · diary   — all embedded & scored
+          authoritative MemoryStore                  append-only development event log
+   data/memories.json + local vectors       data/development/events.jsonl
+   episodic · semantic · reflection · diary  evidence · hypotheses · simulations · outcomes
 ```
 
 ### The four memory layers
@@ -103,8 +116,9 @@ The synthesis: most memory libraries do *one* of these. mnemo wires them into a 
 
 ## Run it on your PC (zero infra)
 
-You only need two things: a Discord bot token and a Vercel AI Gateway key. No database, no Redis —
-memory persists to `data/memories.json`.
+You only need a Discord bot token and one configured text-model provider. No database or Redis is required:
+memory persists to `data/memories.json`, developmental evidence to `data/development/events.jsonl`, and the
+local embedding model downloads once into the Transformers cache.
 
 ```bash
 cd mnemo
@@ -115,8 +129,9 @@ npm run dev                 # starts the bot + the dream loop
 ```
 
 - **DM the bot**, or **@mention** it / **reply** to it in a server channel, to chat.
-- Slash commands: `/whoami`, `/remember content:<text>`, `/context query:<text>`, `/recall about:<topic>`, `/diary`, `/dream` (sleep now), `/worker`, `/importmem`, `/forget`, `/channels`, `/roles`, `/server`, `/botinfo`, `/permissions`, `/cando`, `/auditperms`, `/overwrites`, `/auditlog`, `/members`, `/history`, `/fetchmsg`, `/threads`, `/assets`, `/voice`, `/invites`, `/summary`, `/status`, `/why`, `/botchat`, `/botping`, `/shitlist`, `/pause`, `/resume`, `/model status|list|pick|set|reset`, `/web search|extract|crawl|map|research|research_status`, `/codex`.
+- Slash commands: `/whoami`, `/remember`, `/context`, `/memorypanel`, `/recall`, `/diary`, `/dream`, `/worker`, `/importmem`, `/forget`, `/development`, `/channels`, `/roles`, `/server`, `/botinfo`, `/permissions`, `/cando`, `/auditperms`, `/overwrites`, `/auditlog`, `/members`, `/history`, `/fetchmsg`, `/threads`, `/assets`, `/voice`, `/invites`, `/summary`, `/status`, `/why`, `/botchat`, `/botping`, `/shitlist`, `/pause`, `/resume`, `/model status|list|pick|set|reset`, `/provider`, `/web`, `/codex`.
 - Force a sleep cycle from the CLI: `npm run dream -- <your-discord-user-id>`.
+- Verify deterministic invariants with `npm run eval:development`; inspect real accumulated Discord outcomes with `npm run eval:development:observed -- <user-id>`.
 
 ### Discord setup
 1. https://discord.com/developers/applications → New Application → copy the **Application ID** → `DISCORD_APP_ID`.
@@ -125,10 +140,12 @@ npm run dev                 # starts the bot + the dream loop
    History → open the URL to invite it.
 4. Default command registration deploys to every guild the bot is in. Set `DISCORD_DEPLOY_GLOBAL_COMMANDS=true` only if you intentionally want global commands, or `DISCORD_DEPLOY_ALL_GUILDS=false` plus `DISCORD_DEV_GUILD_ID=<guild-id>` for one guild.
 
-### Vercel AI Gateway
+### Model providers
 Create a key at <https://vercel.com/docs/ai-gateway> → `AI_GATEWAY_API_KEY`. Pick models per role in `.env`
-(`MODEL_CHAT`, `MODEL_REASONER`, `MODEL_FAST`, `MODEL_EMBED`) using `creator/model-name` ids. `GATEWAY_SORT`
-picks the routing objective (`cost` | `latency` | `throughput`).
+(`MODEL_CHAT`, `MODEL_REASONER`, `MODEL_FAST`) using `creator/model-name` ids. `GATEWAY_SORT` picks the
+routing objective (`cost` | `latency` | `throughput`). Optional `ZAI_API_KEY` and `ZAI_CODING_API_KEY`
+enable direct GLM lanes and live `/provider` switching. Embeddings remain independently local unless
+`EMBED_PROVIDER=vercel` is explicitly selected.
 
 ---
 
@@ -157,6 +174,8 @@ BOT_PERSONA_PATH=personas/hikari-merged.xml
 `.env` exposes the Generative-Agents retrieval weights (`RETRIEVAL_W_RELEVANCE/IMPORTANCE/RECENCY`), the
 recency half-life (`RECENCY_HALFLIFE_HOURS`), the dream cadence + idle gate (`DREAM_INTERVAL_MIN`,
 `DREAM_IDLE_MIN`), and conversation handling (`BATCH_MS`, `HISTORY_N`, `DISCORD_RESPOND_TO_BOTS`,
-`DISCORD_TEXT_ATTACHMENT_MAX_BYTES`, `DISCORD_TEXT_ATTACHMENT_MAX_FILES`).
+`DISCORD_TEXT_ATTACHMENT_MAX_BYTES`, `DISCORD_TEXT_ATTACHMENT_MAX_FILES`). Developmental controls include
+`DEVELOPMENT_MAX_PREDICTIONS`, `DEVELOPMENT_UTILITY_*`, `DEVELOPMENT_SIMULATIONS_PER_DREAM`,
+`DEVELOPMENT_SELF_DELTA_*`, and `DEVELOPMENT_SHADOW_PROVIDER`.
 
 > It forgets on purpose. That's the point — a mind that keeps everything isn't remembering, it's just logging.
