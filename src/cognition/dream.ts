@@ -27,7 +27,12 @@ export async function dream(
   if (ingredients.length === 0) return null;
 
   const material = ingredients
-    .map((m) => `(${m.kind}, importance ${m.importance.toFixed(0)}) ${m.content}`)
+    .map((m) => {
+      const inference = m.kind === 'reflection'
+        ? `, inference confidence ${reflectionConfidence(m.meta).toFixed(2)}; preserve uncertainty`
+        : '';
+      return `(${m.kind}, importance ${m.importance.toFixed(0)}${inference}) ${m.content}`;
+    })
     .join('\n');
 
   let text: string;
@@ -41,12 +46,14 @@ export async function dream(
         user_name: subjectId,
         user_input: 'private dream cycle',
         personality_mood: 'reflective',
-        social_relationship_level: 'close',
-        social_level: 'close',
+        social_relationship_level: 'acquaintance',
+        social_level: 'acquaintance',
       })}\n\n${PERSONA.dreamVoice}`,
       prompt:
         `It is the quiet hour. Consolidate the following memories and insights into a single short ` +
-        `diary entry (3–6 sentences). Let the important things surface and the trivial things fade.\n\n${material}`,
+        `diary entry (3–6 sentences). Let the important things surface and the trivial things fade. ` +
+        `Reflection ingredients are hypotheses, not facts about another person's feelings, motives, or values; ` +
+        `keep their uncertainty explicit.\n\n${material}`,
       temperature: 0.85,
       maxOutputTokens: 1800,
     }));
@@ -69,4 +76,9 @@ export async function dream(
 
   log.info(`subject=${subjectId} wrote a diary entry from ${ingredients.length} memories`);
   return rec;
+}
+
+function reflectionConfidence(meta: Record<string, unknown>): number {
+  const value = meta['confidence'];
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
 }

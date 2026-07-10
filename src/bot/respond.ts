@@ -50,9 +50,17 @@ function renderMemories(mems: ScoredMemory[]): string {
   return mems
     .map((m) => {
       const stale = m.validTo ? ' [was true earlier]' : '';
-      return `- (${byKind[m.kind]}) ${clampMemoryLine(extractPersonaMessage(m.content))}${stale}`;
+      const inference = m.kind === 'reflection'
+        ? ` [inference, not fact; confidence ${reflectionConfidence(m.meta).toFixed(2)}]`
+        : '';
+      return `- (${byKind[m.kind]})${inference} ${clampMemoryLine(extractPersonaMessage(m.content))}${stale}`;
     })
     .join('\n');
+}
+
+function reflectionConfidence(meta: Record<string, unknown>): number {
+  const value = meta['confidence'];
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
 }
 
 function clampMemoryLine(text: string): string {

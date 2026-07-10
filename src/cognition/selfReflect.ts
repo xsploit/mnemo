@@ -44,9 +44,12 @@ export async function evolveSelf(args: {
 }): Promise<string[]> {
   if (!config.development.enabled) return [];
   const current = await selfModelStore.get();
-  const evidence = [...args.observations, ...args.reflections].slice(0, 30);
+  const evidence = args.observations.slice(0, 30);
   if (evidence.length === 0) return [];
   const numbered = evidence.map((memory, index) => `${index}. [${memory.id}] (${memory.kind}) ${memory.content}`).join('\n');
+  const reflectionContext = args.reflections.length
+    ? args.reflections.slice(0, 10).map((memory) => `- ${memory.content}`).join('\n')
+    : '(none)';
   const notes = current.selfNotes.length ? current.selfNotes.map((note, index) => `[${index}] ${note}`).join('\n') : '(none)';
 
   let rawCandidates: z.infer<typeof candidateSchema>['candidates'] = [];
@@ -61,12 +64,12 @@ You do not edit the self-model. You only propose candidates for later determinis
 Rules:
 - Most sleep cycles should propose nothing.
 - A candidate must describe Hikari, not facts about another person.
-- Generated mood or diary prose alone is not evidence. Cite supplied evidence indices.
+- Generated mood, diary prose, and reflection hypotheses are not evidence. Cite lived-observation indices only.
 - Use a stable traitKey so the same underlying trait can accumulate support across nights.
 - Prefer small, specific, behaviorally meaningful changes. Never rewrite the core persona.
 - Add needs a concise first-person note. Revise/drop needs a valid current-note index.
 - Confidence measures evidence strength, not writing confidence.`,
-      prompt: `Current self-notes:\n${notes}\n\nTonight's diary is context only:\n${args.diaryText ?? '(none)'}\n\nEvidence from lived interactions:\n${numbered}`,
+      prompt: `Current self-notes:\n${notes}\n\nTonight's diary is context only:\n${args.diaryText ?? '(none)'}\n\nReflection hypotheses are context only and cannot be cited:\n${reflectionContext}\n\nEvidence from lived interactions:\n${numbered}`,
       temperature: 0.25,
       maxOutputTokens: 1200,
     });

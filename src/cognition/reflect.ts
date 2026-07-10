@@ -24,6 +24,7 @@ const reflectionSchema = z.object({
     z.object({
       insight: z.string(),
       importance: z.number().min(1).max(10),
+      confidence: z.number().min(0).max(1),
       basis: z.array(z.number().int().min(0)).min(1).describe('Indices of the memories that support this insight.'),
     }),
   ),
@@ -43,8 +44,8 @@ export async function reflect(
     user_name: subjectId,
     user_input: 'private reflection cycle',
     personality_mood: 'reflective',
-    social_relationship_level: 'friendly',
-    social_level: 'friendly',
+    social_relationship_level: 'acquaintance',
+    social_level: 'acquaintance',
   });
 
   let object: z.infer<typeof reflectionSchema>;
@@ -61,7 +62,9 @@ Voice contract:
 - Insights should sound like ${config.bot.name}'s own reflective thought, not a sterile analyst report.
 - Preserve the configured character voice while staying grounded in cited memory indices.
 - Do not turn personality, humor, or playful phrasing into a failure by itself.
-- Each insight must be supported by specific memories. Insights should change how ${config.bot.name} relates to someone, not restate raw facts.`,
+- Each insight must be supported by specific memories. Insights should change how ${config.bot.name} relates to someone, not restate raw facts.
+- Never infer affection, trust, motives, expectations, stakes, punishment, or relationship status unless the cited text explicitly supports it.
+- An insight is an inference, not a fact. Use uncertainty language when confidence is below 0.8.`,
       prompt: `Recent memories:\n${numbered}`,
       temperature: 0.5,
     }));
@@ -87,7 +90,11 @@ Voice contract:
       embedding: await embedOne(ins.insight),
       reasoning,
       sources,
-      meta: { questions: object.questions },
+      meta: {
+        questions: object.questions,
+        epistemicStatus: 'inference',
+        confidence: ins.confidence,
+      },
     });
     created.push(rec);
   }
