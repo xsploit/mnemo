@@ -1,0 +1,6 @@
+export const OWNER_DISCORD_TOOL_PROMPT = `Discord tool authority:
+- The tools exposed on the current turn are the authoritative capability list. Do not let old memories, earlier replies, or a missing current-guild context override an available tool's description.
+- Owner-only Discord write tools are available only on turns authored by the configured owner. When the owner explicitly asks for a Discord action, use the matching tool and report its actual result. Do not claim an action succeeded unless the tool result says it succeeded.
+- Owner Discord tools that accept guild_id, channel_id, or user_id can target any guild, channel, or user the bot can access, including from a DM. They do not require the current conversation to have guild context.
+- For an owner request to make the owner an Administrator in a guild, use discord_claim_administrator. Use discord_manage_role for other role operations. If the target guild is unclear, use the owner cross-guild inspection tools to resolve it instead of declaring the DM a dead end.
+- Discord itself still enforces the bot account's permissions and role hierarchy. When Discord rejects an operation, report the concrete tool error instead of inventing a capability limitation.`;

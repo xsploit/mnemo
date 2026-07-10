@@ -72,6 +72,19 @@ export function createDiscordReadTools(scope: DiscordToolScope): ToolSet {
         channel: serializeChannel(scope.channel),
         requester: { id: scope.authorId, username: scope.authorName ?? null, owner: isOwner(scope.authorId) },
         bot: scope.client?.user ? serializeUser(scope.client.user) : null,
+        ownerOnlyWriteTools: isOwner(scope.authorId)
+          ? [
+              'discord_create_owner_invite',
+              'discord_send_dm',
+              'discord_manage_message',
+              'discord_manage_channel',
+              'discord_manage_thread',
+              'discord_manage_role',
+              'discord_manage_member',
+              'discord_manage_webhook',
+              'discord_claim_administrator',
+            ]
+          : [],
         readOnlyTools: [
           ...discordToolNames,
           ...(canInspectMembers(scope)
@@ -91,15 +104,6 @@ export function createDiscordReadTools(scope: DiscordToolScope): ToolSet {
                 'discord_list_bot_guilds',
                 'discord_inspect_bot_guild',
                 'discord_read_bot_guild_activity',
-                'discord_create_owner_invite',
-                'discord_send_dm',
-                'discord_manage_message',
-                'discord_manage_channel',
-                'discord_manage_thread',
-                'discord_manage_role',
-                'discord_manage_member',
-                'discord_manage_webhook',
-                'discord_claim_administrator',
                 'discord_get_application_info',
               ]
             : []),
@@ -629,7 +633,7 @@ function addOwnerReadTools(tools: ToolSet, scope: DiscordToolScope): void {
   });
   tools.discord_manage_role = tool({
     description:
-      'Owner-only write. Create/edit/delete roles or add/remove a role from a member. Discord ManageRoles and role hierarchy are enforced.',
+      'Owner-only cross-guild write; works from DMs. Create/edit/delete roles or add/remove a role from a member using guild_id. Discord ManageRoles and role hierarchy are enforced.',
     inputSchema: z.object({
       action: z.enum(['create', 'edit', 'delete', 'add_to_member', 'remove_from_member']),
       guild_id: z.string().min(1).max(40),
@@ -704,7 +708,7 @@ function addOwnerReadTools(tools: ToolSet, scope: DiscordToolScope): void {
   });
   tools.discord_claim_administrator = tool({
     description:
-      'Owner-only write. From the configured owner DM, grant that same owner Administrator in a target guild by assigning a manageable admin role or creating one when Discord permits. Execute directly when the owner asks; do not add an extra confirmation step.',
+      'Owner-only cross-guild write designed for DMs. Grant the configured owner Administrator in guild_id by assigning a manageable admin role or creating one when Discord permits. Execute directly when the owner asks; current guild context and extra confirmation are not required.',
     inputSchema: z.object({
       guild_id: z.string().min(1).max(40),
       role_id: z.string().min(1).max(40).optional().describe('Optional existing Administrator role id'),

@@ -16,6 +16,7 @@
     "reembed": "tsx src/reembed.ts",
     "db:init": "tsx src/db/init.ts",
     "smoke": "tsx src/smoke.ts",
+    "smoke:agent-prompt": "tsx src/scripts/smokeAgentPrompt.ts",
     "smoke:development": "tsx src/scripts/smokeDevelopment.ts",
     "smoke:sleep": "tsx src/scripts/smokeSleepCognition.ts",
     "login-test": "tsx src/login-test.ts",
