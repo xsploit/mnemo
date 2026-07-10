@@ -20,7 +20,7 @@ import type {
   UtilityProjection,
   UtilityUpdateEventData,
 } from './types.js';
-import { applyUtilityToMemories } from './utility.js';
+import { applyUtilityToMemories, selectCreditEligibleMemoryIds } from './utility.js';
 
 export interface DevelopmentReplayReport {
   ok: boolean;
@@ -116,6 +116,7 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
   const reranked = applyUtilityToMemories([low, high], projection, 'global', 0.2, 0.2);
   assert.equal(reranked[0]?.id, 'high');
   assert.equal(reranked.find((memory) => memory.id === 'low')?.score, low.score);
+  assert.deepEqual(selectCreditEligibleMemoryIds([low, high], 0.2), ['high']);
   checks.utilityRelevanceGate = true;
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hikari-development-replay-'));

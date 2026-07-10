@@ -23,7 +23,7 @@ import { createMemorySearchTools } from './memoryTools.js';
 import { scoreMemory } from '../memory/retrieval.js';
 import type { MemoryRecord, ScoredMemory } from '../memory/types.js';
 import { compileCognitiveState, renderCognitiveState } from '../development/cognitiveState.js';
-import { rerankMemoriesWithUtility } from '../development/utility.js';
+import { rerankMemoriesWithUtility, selectCreditEligibleMemoryIds } from '../development/utility.js';
 import type { SocialPrediction } from '../development/types.js';
 import { observeShadowMemory, observeShadowRetrieval } from '../development/shadow.js';
 
@@ -675,7 +675,10 @@ If they still do not contain the answer, say you cannot pin it down without pret
         ? {
             cognitiveStateId: cognitive.eventId,
             predictions: cognitive.state.predictions,
-            memoryIds: retrievedForTrace.map((memory) => memory.id),
+            memoryIds: selectCreditEligibleMemoryIds(
+              retrievedForTrace,
+              config.development.utilityMinRelevance,
+            ),
             strategyKeys: [`goal:${strategyKey(cognitive.state.response.primaryGoal)}`],
             turnTraceId,
           }

@@ -45,6 +45,23 @@ export function applyUtilityToMemories(
     .sort((left, right) => right.score - left.score || right.createdAt.getTime() - left.createdAt.getTime());
 }
 
+export function selectCreditEligibleMemoryIds(
+  memories: ScoredMemory[],
+  minRelevance: number,
+  limit = 8,
+): string[] {
+  return [...memories]
+    .filter((memory) => memory.parts.relevance >= minRelevance)
+    .sort(
+      (left, right) =>
+        right.parts.relevance - left.parts.relevance ||
+        right.score - left.score ||
+        right.createdAt.getTime() - left.createdAt.getTime(),
+    )
+    .slice(0, Math.max(0, limit))
+    .map((memory) => memory.id);
+}
+
 export async function recordUtilityUpdates(args: {
   targetType: UtilityUpdateEventData['targetType'];
   targetIds: string[];
