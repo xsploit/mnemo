@@ -2569,6 +2569,9 @@ function renderTurnTrace(trace: NonNullable<Awaited<ReturnType<typeof latestTurn
       ? `developmentState=${trace.development.cognitiveStateId ?? 'not-persisted'} compiler=${trace.development.compiler} predictions=${trace.development.predictionCount}`
       : undefined,
     trace.development ? `developmentGoal=${trace.development.primaryGoal} topic=${trace.development.topic}` : undefined,
+    trace.latency
+      ? `latencyMs=memory:${trace.latency.memoryMs.toFixed(0)} context:${trace.latency.contextMs.toFixed(0)} cognition:${trace.latency.cognitiveMs.toFixed(0)} generation:${trace.latency.generationMs.toFixed(0)} repair:${trace.latency.recallRepairMs.toFixed(0)} preSend:${trace.latency.preSendMs.toFixed(0)}`
+      : undefined,
     `systemChars=${trace.systemChars} promptChars=${trace.promptChars}`,
     `historyTurns=${trace.history.length}`,
     `retrievedMemories=${trace.retrieved.length}`,

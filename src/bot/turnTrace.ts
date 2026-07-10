@@ -37,6 +37,14 @@ export interface TurnTraceInput {
   retrieved: ScoredMemory[];
   affect?: PersonaAffect | null;
   toolTrace?: ToolTraceEntry[];
+  latency?: {
+    memoryMs: number;
+    contextMs: number;
+    cognitiveMs: number;
+    generationMs: number;
+    recallRepairMs: number;
+    preSendMs: number;
+  };
   development?: {
     cognitiveStateId: string | null;
     compiler: 'model' | 'fallback';
@@ -83,6 +91,16 @@ export async function appendTurnTrace(input: TurnTraceInput): Promise<TurnTraceR
       output: clampUnknown(item.output, 12000),
       error: clampUnknown(item.error, 4000),
     })),
+    latency: input.latency
+      ? {
+          memoryMs: boundedMs(input.latency.memoryMs),
+          contextMs: boundedMs(input.latency.contextMs),
+          cognitiveMs: boundedMs(input.latency.cognitiveMs),
+          generationMs: boundedMs(input.latency.generationMs),
+          recallRepairMs: boundedMs(input.latency.recallRepairMs),
+          preSendMs: boundedMs(input.latency.preSendMs),
+        }
+      : undefined,
     development: input.development
       ? {
           cognitiveStateId: input.development.cognitiveStateId,
@@ -295,4 +313,8 @@ function envInt(name: string, fallback: number, min: number, max: number): numbe
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+function boundedMs(value: number): number {
+  return Math.max(0, Math.min(3_600_000, Number.isFinite(value) ? Number(value.toFixed(2)) : 0));
 }

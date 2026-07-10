@@ -372,6 +372,7 @@ export async function respond(args: {
   kind?: 'dm' | 'mention' | 'reply' | 'channel';
   toolScope?: DiscordToolScope;
 }): Promise<RespondResult> {
+  const turnStarted = performance.now();
   const memoryEnabled = !(await memoryPrivacy.isOptedOut(args.subjectId));
   const store = memoryEnabled ? await getStore() : null;
   const queryText = clampForCognition(args.message, 8000);
@@ -388,6 +389,7 @@ export async function respond(args: {
           queryText,
         })
       : [];
+  const memoryReadyAt = performance.now();
 
   const historyBlock = args.history && args.history.length ? `\n\n${renderHistoryXml(args.history)}` : '';
   const speakerBlock = `<current_speaker username="${xmlEscape(args.userTag ?? args.userName)}" display_name="${xmlEscape(args.userName)}" note="this is who you are replying to RIGHT NOW" />`;
@@ -416,6 +418,7 @@ export async function respond(args: {
   const selfModel = config.bot.selfEvolution ? await selfModelStore.get() : null;
   const selfBlock = selfModel ? renderSelfBlock(selfModel) : '';
   const memoriesText = renderMemories(memories);
+  const cognitiveStarted = performance.now();
   const cognitive = config.development.enabled && config.development.cognitivePrepass
     ? await compileCognitiveState({
         subjectId: args.subjectId,
@@ -430,6 +433,7 @@ export async function respond(args: {
         persist: memoryEnabled,
       })
     : null;
+  const cognitiveReadyAt = performance.now();
   const cognitiveBlock = cognitive ? renderCognitiveState(cognitive.state) : '';
 
   const system = `${persona}${selfBlock ? `\n\n${selfBlock}` : ''}
@@ -492,6 +496,7 @@ not sure who said something, ask instead of guessing. Refer to people by their d
     }),
   };
   const toolTrace: ToolTraceEntry[] = [];
+  const generationStarted = performance.now();
   const res = await generateText({
     model: models.chat,
     system,
@@ -502,12 +507,14 @@ not sure who said something, ask instead of guessing. Refer to people by their d
     providerOptions: gatewayProviderOptions,
     ...(Object.keys(tools).length ? { tools, stopWhen: stepCountIs(5) } : {}),
   });
+  const generationReadyAt = performance.now();
   toolTrace.push(...extractToolTrace(res, 'initial'));
 
   let parsed = parsePersonaOutput(res.text);
   let reply = stripFishSpeechTags(parsed.message);
   let retrievedForTrace = memories;
   let historyForTrace = args.history ?? [];
+  let recallRepairMs = 0;
 
   if (
     memoryEnabled &&
@@ -517,6 +524,7 @@ not sure who said something, ask instead of guessing. Refer to people by their d
       memories,
     })
   ) {
+    const recallRepairStarted = performance.now();
     try {
       const repair = await buildRecallRepairEvidence({
         store,
@@ -555,6 +563,8 @@ If they still do not contain the answer, say you cannot pin it down without pret
       }
     } catch (e: any) {
       log.warn('recall repair failed', e?.message ?? e);
+    } finally {
+      recallRepairMs = performance.now() - recallRepairStarted;
     }
   }
 
@@ -568,6 +578,7 @@ If they still do not contain the answer, say you cannot pin it down without pret
 
   let turnTraceId: string | null = null;
   if (memoryEnabled) {
+    const preSendAt = performance.now();
     const trace = await appendTurnTrace({
       subjectId: args.subjectId,
       channelId: args.channelId,
@@ -583,6 +594,14 @@ If they still do not contain the answer, say you cannot pin it down without pret
       retrieved: retrievedForTrace,
       affect: parsed.affect,
       toolTrace,
+      latency: {
+        memoryMs: memoryReadyAt - turnStarted,
+        contextMs: cognitiveStarted - memoryReadyAt,
+        cognitiveMs: cognitiveReadyAt - cognitiveStarted,
+        generationMs: generationReadyAt - generationStarted,
+        recallRepairMs,
+        preSendMs: preSendAt - turnStarted,
+      },
       development: cognitive
         ? {
             cognitiveStateId: cognitive.eventId,
