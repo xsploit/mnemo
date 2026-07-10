@@ -257,6 +257,7 @@ export const config = {
   development: {
     /** Master switch for Hikari's experimental cognition/event loop. */
     enabled: bool('DEVELOPMENT_ENABLED', true),
+    eventPath: path.resolve(opt('DEVELOPMENT_EVENT_PATH', path.join('data', 'development', 'events.jsonl'))),
     /** Structured replacement for the older free-form inner-voice pass. */
     cognitivePrepass: bool('DEVELOPMENT_COGNITIVE_PREPASS', bool('INNER_VOICE', true)),
     /** Adaptive uses the model only for socially complex turns plus a stable sample. */

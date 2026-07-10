@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { config } from '../config.js';
 import { logger } from '../logger.js';
 import {
   DEVELOPMENT_SCHEMA,
@@ -12,7 +13,7 @@ import {
 } from './types.js';
 
 const log = logger('development:events');
-const DEFAULT_PATH = path.resolve(process.env.DEVELOPMENT_EVENT_PATH ?? path.join('data', 'development', 'events.jsonl'));
+const DEFAULT_PATH = config.development.eventPath;
 
 export class DevelopmentEventStore {
   private writeTail: Promise<void> = Promise.resolve();
