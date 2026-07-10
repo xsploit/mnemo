@@ -57,6 +57,24 @@ function emojiFor(mood: string | undefined): string {
   return MOOD_EMOJI[mood.toLowerCase()] ?? '💭';
 }
 
+/**
+ * Pick an emoji reaction for the *user's* message based on how she felt replying
+ * to it. Only reacts when the moment is emotionally charged — neutral turns get
+ * nothing, so reactions stay meaningful instead of becoming noise.
+ */
+export function reactionEmojiFor(affect: PersonaAffect | null): string | null {
+  if (!affect) return null;
+  const valence = affect.valence ?? 0;
+  const arousal = affect.arousal ?? 0;
+  const charged = arousal >= 0.65 || Math.abs(valence) >= 0.55;
+  if (!charged) return null;
+  const mapped = affect.mood ? MOOD_EMOJI[affect.mood.toLowerCase()] : undefined;
+  if (mapped) return mapped;
+  if (valence >= 0.55) return '💖';
+  if (valence <= -0.55) return '😤';
+  return null;
+}
+
 /** Map affect to a Discord custom status. Throttled to avoid presence rate limits. */
 export function applyMoodPresence(client: Client, minIntervalMs = 15_000): void {
   if (!client.user || !latest) return;

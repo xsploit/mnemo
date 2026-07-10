@@ -18,7 +18,8 @@ import {
   readDiscordTextAttachmentContext,
 } from './attachments.js';
 import { formatShitlistReply, shitlistStore } from './shitlist.js';
-import { applyMoodPresence } from '../cognition/mood.js';
+import { aiProblemMessage, aiProblemMentions } from './errorReply.js';
+import { applyMoodPresence, reactionEmojiFor } from '../cognition/mood.js';
 import { ttsPolicy } from './ttsPolicy.js';
 import { buildDiscordVoiceClip, fishTtsConfigured, sendDiscordVoiceMessage } from '../voice/fishTts.js';
 import { buildTaggedFishSpeechText } from '../voice/fishSpeechTags.js';
@@ -27,6 +28,29 @@ import { appendTurnTrace } from './turnTrace.js';
 const log = logger('bot');
 
 type MsgKind = 'dm' | 'mention' | 'reply' | 'channel';
+
+/**
+ * Keep the "is typing…" indicator alive for the whole turn. Discord's typing
+ * state expires ~10s after each sendTyping(), but heavy turns (tools, vision,
+ * web search, recall repair) can run far longer — without a refresh loop she
+ * looks dead mid-thought. Refreshes every 8s, hard-capped so a hung turn can't
+ * leave her "typing" forever. Call the returned function to stop.
+ */
+function keepTyping(channel: unknown, maxMs = 3 * 60_000): () => void {
+  const target = channel as { sendTyping?: () => Promise<unknown> };
+  if (typeof target.sendTyping !== 'function') return () => {};
+  const started = Date.now();
+  const fire = () => void target.sendTyping!().catch(() => {});
+  fire();
+  const timer = setInterval(() => {
+    if (Date.now() - started > maxMs) {
+      clearInterval(timer);
+      return;
+    }
+    fire();
+  }, 8_000);
+  return () => clearInterval(timer);
+}
 
 /** One pending batch of rapid-fire messages from a single author in a channel. */
 interface Batch {
@@ -42,6 +66,7 @@ export function createClient(): Client {
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildVoiceStates, // required for /vc voice connections
   ];
   if (config.discord.guildMembersIntent) intents.push(GatewayIntentBits.GuildMembers);
 
@@ -66,10 +91,13 @@ export function createClient(): Client {
       }
     } catch (e: any) {
       log.error('command error', e?.message);
-      const note = 'Something glitched in my head. Try again?';
+      const note = aiProblemMessage(e);
       if (!interaction.isRepliable()) return;
-      if (interaction.deferred || interaction.replied) await interaction.editReply(note);
-      else await interaction.reply({ content: note, ephemeral: true });
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: note, allowedMentions: aiProblemMentions() }).catch(() => {});
+      } else {
+        await interaction.reply({ content: note, ephemeral: true, allowedMentions: aiProblemMentions() }).catch(() => {});
+      }
     }
   });
 
@@ -90,7 +118,8 @@ export function createClient(): Client {
         .then((r) => r.author.id === client.user!.id)
         .catch(() => false));
 
-    // In servers, only engage when addressed: @mention or a reply to the bot.
+    // In servers, only engage when addressed: @mention or a reply to the bot
+    // (this holds inside /cc private threads too — she always needs a mention).
     if (!isDM && !mentioned && !isReplyToBot) return;
     if (getRepliesPaused()) return;
     const shitlistEntry = await shitlistStore.get(msg.author.id);
@@ -191,7 +220,10 @@ async function fetchHistory(channel: TextBasedChannel, n: number, excludeId: str
       .reverse()
       .slice(-n)
       .map((m) => ({
-        author: m.author.id === channel.client.user?.id ? `${m.author.displayName} (you)` : m.author.bot ? `${m.author.displayName} (bot)` : m.author.displayName,
+        author: m.member?.displayName ?? m.author.displayName,
+        username: m.author.username,
+        bot: m.author.bot,
+        self: m.author.id === channel.client.user?.id,
         content: [m.content, attachmentSummaryForHistory(m)].filter(Boolean).join(' '),
       }));
   } catch {
@@ -208,15 +240,16 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
     return;
   }
   const message = batch.messages.join('\n');
+  const stopTyping = keepTyping(msg.channel);
   try {
-    if ('sendTyping' in msg.channel) await msg.channel.sendTyping();
     const history = await fetchHistory(msg.channel, config.bot.historyN, msg.id);
     const ttsOn = fishTtsConfigured() && (await ttsPolicy.isEnabled(msg.channelId));
     const response = await respond({
       subjectId: msg.author.id,
       channelId: msg.channelId,
       messageId: msg.id,
-      userName: msg.author.displayName ?? msg.author.username,
+      userName: (msg.member?.displayName ?? msg.author.displayName) || msg.author.username,
+      userTag: msg.author.username,
       message,
       history,
       kind: batch.kind,
@@ -233,6 +266,7 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
       },
     });
     const reply = response.message;
+    stopTyping(); // the reply is about to land — indicator's job is done
     if (config.bot.moodPresence) applyMoodPresence(client);
     const chunks = splitMessage(reply);
     for (let i = 0; i < chunks.length; i++) {
@@ -248,6 +282,14 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
       }
     }
 
+    // Occasionally react to the user's message with a mood-matched emoji —
+    // only on emotionally charged turns, and only sometimes, so it stays alive
+    // rather than mechanical.
+    if (config.bot.reactionsEnabled && Math.random() < config.bot.reactionChance) {
+      const emoji = reactionEmojiFor(response.affect);
+      if (emoji) await msg.react(emoji).catch(() => {});
+    }
+
     // Voice clip: text first, then her voice, when TTS is on for this channel.
     log.debug(`tts gate: configured=${fishTtsConfigured()} channelOn=${ttsOn}`);
     if (ttsOn && 'send' in msg.channel) {
@@ -258,7 +300,7 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
       });
       const clip = await buildDiscordVoiceClip(voiceText, 'hikari');
       if (clip) {
-        const sentId = await sendDiscordVoiceMessage(msg.channelId, clip).catch((e: any) => {
+        const sentId = await sendDiscordVoiceMessage(client.rest, msg.channelId, clip).catch((e: any) => {
           log.warn('voice message send failed', e?.message ?? e);
           return null;
         });
@@ -269,7 +311,11 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
     }
   } catch (e: any) {
     log.error('message handling failed', e?.message);
-    await msg.reply('…my head went quiet for a sec. Say that again?').catch(() => {});
+    await msg
+      .reply({ content: aiProblemMessage(e), allowedMentions: aiProblemMentions() })
+      .catch(() => {});
+  } finally {
+    stopTyping(); // safety: never leave the indicator looping after a failure
   }
 }
 

@@ -91,13 +91,30 @@ export async function synthesizeVoice(text: string): Promise<VoiceClip | null> {
   };
 }
 
+/**
+ * Low-latency synthesis of one small text chunk (a sentence) for live VC.
+ * Uses Fish's 'balanced' latency mode and returns raw mp3 — the VC player
+ * transcodes via its own ffmpeg pipe, so no extra conversion step here.
+ */
+export async function synthesizeVoiceChunkFast(text: string): Promise<Buffer | null> {
+  if (!fishTtsConfigured()) return null;
+  const { clean } = cleanForSpeech(text);
+  if (!clean) return null;
+  const buf = await synthesizeRaw(clean, 'mp3', 'balanced');
+  return buf && buf.length > 0 ? buf : null;
+}
+
 /** One Fish TTS request for an already-cleaned text piece → audio buffer (or null). */
-async function synthesizeRaw(cleanText: string, format: AudioFormat): Promise<Buffer | null> {
+async function synthesizeRaw(
+  cleanText: string,
+  format: AudioFormat,
+  latency: 'normal' | 'balanced' = 'normal',
+): Promise<Buffer | null> {
   const request = new TTSRequest(cleanText, {
     referenceId: config.fish.voiceId,
     format,
     normalize: true,
-    latency: 'normal',
+    latency,
   });
   // Only send the model header when one is configured; empty = account default.
   const headers = config.fish.model ? { model: config.fish.model } : undefined;
@@ -142,28 +159,29 @@ export async function buildDiscordVoiceClip(text: string, namePrefix = 'hikari')
   }
 }
 
+/** Minimal shape we need from the live discord.js Client's REST manager. */
+export interface DiscordRestLike {
+  post(route: string, options?: { body?: unknown }): Promise<unknown>;
+}
+
+/**
+ * Sends a native Discord voice message. The two real Discord Bot API calls
+ * (attachment-create, message-create) go through the caller's `client.rest`
+ * REST manager so they get discord.js's built-in per-route rate-limit bucket
+ * tracking and Retry-After handling — a raw fetch() here would silently throw
+ * on any 429 instead of queuing/retrying like the rest of the bot's Discord calls.
+ * The PUT to the pre-signed `upload_url` stays a plain fetch: it's not a bot API
+ * route (no bot auth, not part of any rate-limit bucket).
+ */
 export async function sendDiscordVoiceMessage(
+  rest: DiscordRestLike,
   channelId: string,
   clip: DiscordVoiceClip,
   filename = 'voice-message.ogg',
 ): Promise<string | null> {
-  const api = 'https://discord.com/api/v10';
-  const headers = {
-    Authorization: `Bot ${config.discord.token}`,
-    'Content-Type': 'application/json',
-  };
-
-  const attachmentResponse = await fetchWithTimeout(`${api}/channels/${channelId}/attachments`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      files: [{ id: '0', filename, file_size: clip.ogg.byteLength }],
-    }),
-  });
-  if (!attachmentResponse.ok) throw new Error(`attachment create failed: ${attachmentResponse.status} ${await attachmentResponse.text()}`);
-  const attachmentJson = (await attachmentResponse.json()) as {
-    attachments?: Array<{ id?: string; upload_url?: string; upload_filename?: string }>;
-  };
+  const attachmentJson = (await rest.post(`/channels/${channelId}/attachments`, {
+    body: { files: [{ id: '0', filename, file_size: clip.ogg.byteLength }] },
+  })) as { attachments?: Array<{ id?: string; upload_url?: string; upload_filename?: string }> };
   const upload = attachmentJson.attachments?.[0];
   if (!upload?.upload_url || !upload.upload_filename) throw new Error('Discord did not return a voice upload URL.');
 
@@ -177,10 +195,8 @@ export async function sendDiscordVoiceMessage(
   });
   if (!uploadResponse.ok) throw new Error(`voice upload failed: ${uploadResponse.status} ${await uploadResponse.text()}`);
 
-  const messageResponse = await fetchWithTimeout(`${api}/channels/${channelId}/messages`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
+  const sent = (await rest.post(`/channels/${channelId}/messages`, {
+    body: {
       flags: DISCORD_VOICE_MESSAGE_FLAG,
       attachments: [
         {
@@ -191,10 +207,8 @@ export async function sendDiscordVoiceMessage(
           waveform: clip.waveform,
         },
       ],
-    }),
-  });
-  if (!messageResponse.ok) throw new Error(`voice message send failed: ${messageResponse.status} ${await messageResponse.text()}`);
-  const sent = (await messageResponse.json()) as { id?: string };
+    },
+  })) as { id?: string };
   return sent.id ?? null;
 }
 

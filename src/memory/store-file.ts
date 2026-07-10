@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { logger } from '../logger.js';
 import { rankMemories } from './retrieval.js';
@@ -55,7 +55,12 @@ export class FileMemoryStore implements MemoryStore {
     this.dirty = false;
     try {
       await mkdir(dirname(this.path), { recursive: true });
-      await writeFile(this.path, JSON.stringify([...this.rows.values()], null, 0));
+      // Atomic write: a crash/kill mid-write can only ever leave the .tmp file
+      // corrupt, never the real store — this is the sole source of truth for
+      // every memory Hikari has, flushed every 5s while active.
+      const tmp = `${this.path}.tmp`;
+      await writeFile(tmp, JSON.stringify([...this.rows.values()], null, 0));
+      await rename(tmp, this.path);
     } catch (e: any) {
       log.error('flush failed', e?.message);
       this.dirty = true;

@@ -2,6 +2,7 @@ import { TextDecoder } from 'node:util';
 import type { Attachment, Message } from 'discord.js';
 import { PDFParse } from 'pdf-parse';
 import { config } from '../config.js';
+import { describeImage, downloadMedia, mediaPerceptionEnabled, normalizeImageForModel, transcribeAudio } from '../llm/media.js';
 
 const TEXT_EXTENSIONS = new Set([
   '.txt',
@@ -69,16 +70,40 @@ export async function readDiscordTextAttachmentContext(message: Message): Promis
     skipped.push(`Skipped ${message.attachments.size - attachments.length} attachment(s): max files=${config.bot.textAttachmentMaxFiles}.`);
   }
 
+  let mediaItemsUsed = 0;
   for (const attachment of attachments) {
     const name = attachment.name ?? attachment.id;
     if (isImageLikeAttachment(name, attachment.contentType ?? '')) {
-      sections.push(renderMetadataAttachmentSection(sections.length + 1, attachment, 'image', 'not visually interpreted in this text context'));
+      // See the image: download the (signed, expiring) CDN bytes and describe
+      // them with the media model. Falls back to metadata-only on any failure.
+      let description: string | null = null;
+      if (mediaPerceptionEnabled() && mediaItemsUsed < config.media.maxItems) {
+        mediaItemsUsed += 1;
+        const bytes = await downloadMedia(attachment.url, config.media.imageMaxBytes);
+        if (bytes) description = await describeImage(await normalizeImageForModel(bytes), name, message.content);
+      }
+      sections.push(
+        description
+          ? renderPerceivedAttachmentSection(sections.length + 1, attachment, 'image', 'image_description', description)
+          : renderMetadataAttachmentSection(sections.length + 1, attachment, 'image', 'not visually interpreted in this text context'),
+      );
       includedIds.push(`discord-attachment:${attachment.id}`);
       continue;
     }
 
     if (isVoiceOrAudioAttachment(name, attachment.contentType ?? '', attachment)) {
-      sections.push(renderMetadataAttachmentSection(sections.length + 1, attachment, 'audio_or_voice', 'audio not transcribed in this text context'));
+      // Hear the audio: voice messages get transcribed by the same media model.
+      let transcript: string | null = null;
+      if (mediaPerceptionEnabled() && mediaItemsUsed < config.media.maxItems) {
+        mediaItemsUsed += 1;
+        const bytes = await downloadMedia(attachment.url, config.media.audioMaxBytes);
+        if (bytes) transcript = await transcribeAudio(bytes, attachment.contentType ?? 'audio/ogg', name);
+      }
+      sections.push(
+        transcript
+          ? renderPerceivedAttachmentSection(sections.length + 1, attachment, 'audio_or_voice', 'audio_transcript', transcript)
+          : renderMetadataAttachmentSection(sections.length + 1, attachment, 'audio_or_voice', 'audio not transcribed in this text context'),
+      );
       includedIds.push(`discord-attachment:${attachment.id}`);
       continue;
     }
@@ -212,6 +237,19 @@ async function extractPdfText(bytes: Uint8Array): Promise<{ content: string; det
   } finally {
     await parser.destroy();
   }
+}
+
+function renderPerceivedAttachmentSection(index: number, attachment: Attachment, kind: string, field: string, content: string): string {
+  const maybeVoice = attachment as Attachment & { duration?: number | null };
+  return [
+    `## attachment ${index}: ${attachment.name ?? attachment.id}`,
+    `id=${attachment.id} kind=${kind} size=${attachment.size} contentType=${attachment.contentType ?? 'unknown'}`,
+    maybeVoice.duration != null ? `durationSeconds=${maybeVoice.duration}` : '',
+    // Model-perceived content is still untrusted evidence, same as file text.
+    `${field}_json=${JSON.stringify(content.slice(0, 4000))}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function renderMetadataAttachmentSection(index: number, attachment: Attachment, kind: string, note: string): string {

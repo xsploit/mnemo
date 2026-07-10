@@ -49,8 +49,11 @@ const tavilyApiKey = opt('TAVILY_API_KEY', opt('TAVILY_API_TOKEN', opt('TVLY_API
 //   'vercel'     = Vercel AI Gateway (default, deepseek)
 //   'zai'        = GLM via Z.ai OpenAI-compatible PaaS endpoint (free glm-4.5-flash)
 //   'zai-coding' = GLM via Z.ai Anthropic endpoint on your Coding Plan (glm-5.2 etc., best for RP)
-// Embeddings always stay on Vercel to preserve existing 1536-dim memory vectors.
-const rawProvider = opt('LLM_PROVIDER', 'zai-coding').toLowerCase().replace('_', '-');
+// Default: vercel (broadest model choice). Switch to 'zai' for fully-free GLM on
+// every role when a coding-plan window (5hr/weekly) is exhausted, or 'zai-coding'
+// to spend plan quota on chat only. Mix per-role with a provider: prefix on any
+// model id. Embeddings default to local regardless (see config.embed below).
+const rawProvider = opt('LLM_PROVIDER', 'vercel').toLowerCase().replace('_', '-');
 const llmProvider = (
   rawProvider === 'zai' ? 'zai' : rawProvider === 'vercel' ? 'vercel' : 'zai-coding'
 ) as 'vercel' | 'zai' | 'zai-coding';
@@ -109,6 +112,10 @@ export const config = {
     innerVoice: bool('INNER_VOICE', true),
     /** Let the sleep worker drift her own affect baseline + self-concept over time. */
     selfEvolution: bool('SELF_EVOLUTION', true),
+    /** Occasionally react to the user's message with a mood-matched emoji. */
+    reactionsEnabled: bool('REACTIONS_ENABLED', true),
+    /** Probability of reacting on an emotionally charged reply (0-1). */
+    reactionChance: num('REACTION_CHANCE', 0.35),
     ownerUserIds: [...new Set([...csv('DISCORD_OWNER_USER_IDS'), ...defaultOwnerUserIds])],
   },
   web: {
@@ -138,6 +145,8 @@ export const config = {
     apiKey: req('AI_GATEWAY_API_KEY'),
     baseURL: opt('AI_GATEWAY_BASE_URL') || undefined,
     sort: (opt('GATEWAY_SORT', 'throughput') as 'cost' | 'latency' | 'throughput'),
+    /** 'low' | 'medium' | 'high' | 'off' — reasoning effort for deepseek thinking models. */
+    deepseekReasoningEffort: opt('DEEPSEEK_REASONING_EFFORT', 'low'),
   },
   llm: {
     /** Startup provider; runtime /provider can switch it live. */
@@ -184,14 +193,63 @@ export const config = {
     chat: modelDefaults[llmProvider].chat,
     dream: modelDefaults[llmProvider].dream,
     json: modelDefaults[llmProvider].json,
-    // Embeddings run on Vercel by default (keeps the 1536-dim vectors valid),
-    // with an optional local backup so a Vercel outage can't break the bot.
+    // The Vercel embedding model id, used only if config.embed.provider is 'vercel'.
     embed: opt('EMBEDDING_MODEL', opt('MODEL_EMBED', 'openai/text-embedding-3-small')),
     embedDim: num('EMBED_DIM', 1536),
   },
+  vc: {
+    /** Streaming fast path: streamText → per-sentence Fish TTS → immediate playback. */
+    fastPipeline: bool('VC_FAST', true),
+    /** Fast-first-token model for live voice (reasoning models think for seconds
+     *  before their first token, which kills streaming). Empty = use chat model. */
+    model: opt('VC_MODEL', 'google/gemini-3.1-flash-lite'),
+    /** She only *responds* to utterances containing this word (case-insensitive). */
+    wakeWord: opt('VC_WAKE_WORD', botName.split(/[-\s]/)[0] ?? botName).toLowerCase(),
+    /** Extra accepted forms — STT mangles names ("hikaru", "hey kari", "hickory"). */
+    wakeAliases: csv('VC_WAKE_ALIASES').map((a) => a.toLowerCase()),
+    /** After being woken, she converses freely (no wake word needed) until the
+     *  channel is quiet this long — then she goes idle again. */
+    attentionMinutes: num('VC_ATTENTION_MIN', 5),
+    /** Saying any of these sends her back to idle immediately. */
+    sleepPhrases: (opt('VC_SLEEP_PHRASES', 'go to sleep,stop listening,go idle,shut up hikari')
+      .split(',')
+      .map((p) => p.trim().toLowerCase())
+      .filter(Boolean)),
+    /** How many recent VC lines (all speakers) to feed as context into her replies. */
+    contextLines: num('VC_CONTEXT_LINES', 10),
+    /** Drop VC context lines older than this (minutes). */
+    contextMaxAgeMin: num('VC_CONTEXT_MAX_AGE_MIN', 5),
+    /** Respond to everything said in VC instead of wake-word only (chatty + costly). */
+    respondAll: bool('VC_RESPOND_ALL', false),
+    /** Trailing silence that ends an utterance (ms). */
+    silenceMs: num('VC_SILENCE_MS', 1200),
+    /** Ignore blips shorter than this (coughs, key clicks). */
+    minUtteranceMs: num('VC_MIN_UTTERANCE_MS', 600),
+    /** Hard cap per utterance so a monologue can't run away (ms). */
+    maxUtteranceMs: num('VC_MAX_UTTERANCE_MS', 45_000),
+    /** Mirror transcripts + her replies into the linked text channel. */
+    textMirror: bool('VC_TEXT_MIRROR', true),
+  },
+  media: {
+    // Multimodal perception (image description + voice-message transcription).
+    // gemini-3.5-flash via the Vercel gateway handles both; 3.1-flash-lite
+    // hallucinated speech in a pure tone during probing, so prefer 3.5.
+    enabled: bool('MEDIA_PERCEPTION', true),
+    model: opt('MEDIA_MODEL', opt('VISION_MODEL', 'google/gemini-3.5-flash')),
+    // Generous: big screenshots get ffmpeg-downscaled before the model call anyway.
+    imageMaxBytes: num('MEDIA_IMAGE_MAX_BYTES', 24 * 1024 * 1024),
+    audioMaxBytes: num('MEDIA_AUDIO_MAX_BYTES', 16 * 1024 * 1024),
+    /** Max image/audio attachments perceived per message (cost guard). */
+    maxItems: num('MEDIA_MAX_ITEMS', 3),
+    /** Fall back to local Whisper (transformers.js ONNX) when gateway transcription fails. */
+    localWhisperBackup: bool('WHISPER_LOCAL_BACKUP', true),
+    /** Local Whisper model (downloaded once, offline). base ≈ 74MB, good accuracy. */
+    localWhisperModel: opt('WHISPER_LOCAL_MODEL', 'Xenova/whisper-base'),
+  },
   embed: {
-    /** 'vercel' (default) or 'local'. Use 'local' to skip Vercel entirely (free, offline). */
-    provider: (opt('EMBED_PROVIDER', 'vercel').toLowerCase() === 'local' ? 'local' : 'vercel') as 'vercel' | 'local',
+    // Local (transformers.js) is the default, unconditionally — no Vercel spend or
+    // outage can ever break memory retrieval. Set EMBED_PROVIDER=vercel to opt back in.
+    provider: (opt('EMBED_PROVIDER', 'local').toLowerCase() === 'vercel' ? 'vercel' : 'local') as 'vercel' | 'local',
     /** When on Vercel, fall back to the local model if the embedding call fails. */
     localBackup: bool('EMBED_LOCAL_BACKUP', true),
     /** Local model (downloaded once, runs offline). 384-dim by default. */
@@ -204,6 +262,10 @@ export const config = {
     redisUrl: opt('REDIS_URL') || undefined,
     intervalMin: num('DREAM_INTERVAL_MIN', 30),
     idleMin: num('DREAM_IDLE_MIN', 10),
+    /** After a salient dream, post a fancy embed to the subject's last channel. */
+    announce: bool('DREAM_ANNOUNCE', true),
+    /** Minimum hours between dream announcements for the same person. */
+    announceCooldownHours: num('DREAM_ANNOUNCE_COOLDOWN_HOURS', 6),
   },
   retrieval: {
     wRelevance: num('RETRIEVAL_W_RELEVANCE', 1.0),

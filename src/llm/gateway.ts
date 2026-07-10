@@ -23,11 +23,17 @@ export const gateway = createGateway({
   apiKey: config.gateway.apiKey,
 });
 
-/** Provider-routing knobs applied to every call (sort by cost/latency/throughput). */
+/** Provider-routing knobs applied to every call (sort by cost/latency/throughput).
+ *  Also asks deepseek's thinking models for low reasoning effort — persona chat
+ *  doesn't need deep chains of thought, and it cuts time-to-first-token. Other
+ *  providers ignore the deepseek key. */
 export const gatewayProviderOptions = {
   gateway: {
     sort: config.gateway.sort,
   },
+  ...(config.gateway.deepseekReasoningEffort !== 'off'
+    ? { deepseek: { reasoningEffort: config.gateway.deepseekReasoningEffort } }
+    : {}),
 } as const;
 
 /**
@@ -116,7 +122,7 @@ export const models: {
 };
 
 logger('llm').info(
-  `provider=${activeLlmProvider()} chat=${modelIds.chat} dream=${modelIds.dream} json=${modelIds.json} embed=${modelIds.embed} (embeddings always Vercel)`,
+  `provider=${activeLlmProvider()} chat=${modelIds.chat} dream=${modelIds.dream} json=${modelIds.json} embed=${modelIds.embed} (embed provider: ${config.embed.provider})`,
 );
 
 export function runtimeModelStatus(): Array<{ role: RuntimeModelRole; model: string; defaultModel: string; overridden: boolean }> {

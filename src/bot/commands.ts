@@ -33,6 +33,9 @@ import { config } from '../config.js';
 import { getRepliesPaused, getRespondToBots, setRepliesPaused, setRespondToBots } from './botChatPolicy.js';
 import { ttsPolicy } from './ttsPolicy.js';
 import { fishTtsConfigured } from '../voice/fishTts.js';
+import { workspaceStore } from './workspaces.js';
+import { activeVoiceChannel, joinVoice, leaveVoice } from '../voice/vc.js';
+import { clearAttention, createUtteranceHandler, markAttentive } from '../voice/vcBridge.js';
 import { extractPersonaMessage } from '../llm/personaOutput.js';
 import {
   activeLlmProvider,
@@ -317,6 +320,37 @@ export const commandData = [
     .addBooleanOption((o) =>
       o.setName('enabled').setDescription('Attach a voice clip with replies here. Omit to show status.'),
     ),
+  new SlashCommandBuilder()
+    .setName('vc')
+    .setDescription(`Bring ${NAME} into a voice channel — she speaks her replies and listens for her name.`)
+    .addSubcommand((s) =>
+      s
+        .setName('join')
+        .setDescription('Join your current voice channel (or a chosen one).')
+        .addChannelOption((o) =>
+          o.setName('channel').setDescription('Voice channel to join. Defaults to yours.').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice),
+        )
+        .addBooleanOption((o) => o.setName('listen').setDescription('Transcribe what people say (default true).')),
+    )
+    .addSubcommand((s) => s.setName('leave').setDescription('Leave the voice channel.'))
+    .addSubcommand((s) => s.setName('status').setDescription('Show voice connection status.')),
+  new SlashCommandBuilder()
+    .setName('cc')
+    .setDescription('Private chat with Hikari: make a private thread here and invite people.')
+    .addSubcommand((s) =>
+      s
+        .setName('create')
+        .setDescription('Create a private thread with Hikari in this channel.')
+        .addStringOption((o) => o.setName('name').setDescription('Optional thread name.')),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('invite')
+        .setDescription('Add someone to this private thread (run inside the thread).')
+        .addUserOption((o) => o.setName('user').setDescription('User to add.').setRequired(true)),
+    )
+    .addSubcommand((s) => s.setName('close').setDescription('Archive this private thread (owner only).'))
+    .addSubcommand((s) => s.setName('list').setDescription('List your private threads.')),
   new SlashCommandBuilder()
     .setName('provider')
     .setDescription('Owner-only: view or switch the LLM provider (Vercel / GLM).')
@@ -1352,6 +1386,171 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
         content: `Voice clips are ${now ? 'on 🔊' : 'off 🔇'} in this channel (global default ${
           config.fish.enabledByDefault ? 'on' : 'off'
         }).`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    case 'vc': {
+      const sub = i.options.getSubcommand();
+      if (!i.guild) {
+        await i.reply({ content: 'Voice channels only exist in servers.', ephemeral: true });
+        return;
+      }
+
+      if (sub === 'join') {
+        const picked = i.options.getChannel('channel');
+        const memberVoice = i.member && 'voice' in i.member ? (i.member as GuildMember).voice.channel : null;
+        const target = picked && 'guild' in picked && picked.isVoiceBased() ? picked : memberVoice;
+        if (!target) {
+          await i.reply({ content: 'Join a voice channel first (or pass one with `channel:`).', ephemeral: true });
+          return;
+        }
+        await i.deferReply({ ephemeral: true });
+        const listen = i.options.getBoolean('listen') ?? true;
+        try {
+          await joinVoice(target, {
+            listen,
+            textChannelId: i.channelId,
+            onUtterance: createUtteranceHandler(i.client),
+          });
+          if (listen) markAttentive(i.guild.id); // invited = awake; no need to say her name first
+          await i.editReply(
+            `Joined 🔊 <#${target.id}>${
+              listen
+                ? ` — awake and chatting for ${config.vc.attentionMinutes}m of quiet; after that say "${config.vc.wakeWord}" to wake her (transcripts mirror here).`
+                : ' — speak-only'
+            }.`,
+          );
+        } catch (e) {
+          await i.editReply(`Couldn't join: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        return;
+      }
+
+      if (sub === 'leave') {
+        clearAttention(i.guild.id);
+        const left = leaveVoice(i.guild.id);
+        await i.reply({ content: left ? 'Left the voice channel. 👋' : "I'm not in a voice channel here.", ephemeral: true });
+        return;
+      }
+
+      const channelId = activeVoiceChannel(i.guild.id);
+      await i.reply({
+        content: channelId
+          ? `Connected to <#${channelId}> — wake word "${config.vc.wakeWord}", respond-all ${config.vc.respondAll ? 'on' : 'off'}.`
+          : 'Not connected to a voice channel in this server.',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    case 'cc': {
+      const sub = i.options.getSubcommand();
+
+      if (sub === 'create') {
+        const channel = i.channel;
+        if (!i.guild || !channel || channel.type !== ChannelType.GuildText) {
+          await i.reply({ content: 'Run `/cc create` in a normal server text channel (not a thread or forum).', ephemeral: true });
+          return;
+        }
+        await i.deferReply({ ephemeral: true });
+        const displayName = i.member && 'displayName' in i.member ? (i.member as GuildMember).displayName : i.user.username;
+        const name = (i.options.getString('name') || `${displayName}'s chat`).slice(0, 90);
+        try {
+          const thread = await channel.threads.create({
+            name,
+            type: ChannelType.PrivateThread,
+            invitable: false,
+            autoArchiveDuration: 1440,
+          });
+          await thread.members.add(i.user.id);
+          await workspaceStore.add({
+            threadId: thread.id,
+            ownerId: i.user.id,
+            name,
+            channelId: channel.id,
+            guildId: i.guild.id,
+            createdAt: new Date().toISOString(),
+          });
+          await thread
+            .send(
+              `🔒 Private workspace for <@${i.user.id}>. I'm right here — just talk, no @mention needed. ` +
+                `Use \`/cc invite\` to add people and \`/cc close\` when you're done.\n` +
+                `*(Visible to you, anyone you add, and server staff with Manage Threads — not a DM.)*`,
+            )
+            .catch(() => {});
+          await i.editReply(`Made your private thread: <#${thread.id}> 💬`);
+        } catch (e) {
+          await i.editReply(
+            `Couldn't create the thread: ${e instanceof Error ? e.message : String(e)}\n` +
+              `Private threads need server **Boost Level 2** and my **Create Private Threads** permission.`,
+          );
+        }
+        return;
+      }
+
+      const ws = await workspaceStore.get(i.channelId);
+      const canManage = ws ? ws.ownerId === i.user.id || isOwner(i.user.id) : false;
+
+      if (sub === 'invite') {
+        if (!ws) {
+          await i.reply({ content: 'Run `/cc invite` inside one of your private threads.', ephemeral: true });
+          return;
+        }
+        if (!canManage) {
+          await i.reply({ content: 'Only the thread owner can invite people.', ephemeral: true });
+          return;
+        }
+        const user = i.options.getUser('user', true);
+        const channel = i.channel;
+        if (channel && channel.isThread()) {
+          await i.deferReply({ ephemeral: true });
+          try {
+            // Archived threads reject member adds until unarchived first.
+            if (channel.archived) await channel.setArchived(false);
+            await channel.members.add(user.id);
+            await i.editReply(`Added <@${user.id}> to this thread.`);
+          } catch (e) {
+            await i.editReply(
+              `Couldn't add <@${user.id}>: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+        } else {
+          await i.reply({ content: 'This is not a thread.', ephemeral: true });
+        }
+        return;
+      }
+
+      if (sub === 'close') {
+        if (!ws) {
+          await i.reply({ content: 'Run `/cc close` inside one of your private threads.', ephemeral: true });
+          return;
+        }
+        if (!canManage) {
+          await i.reply({ content: 'Only the thread owner can close it.', ephemeral: true });
+          return;
+        }
+        await i.deferReply({ ephemeral: true });
+        const channel = i.channel;
+        try {
+          if (channel && channel.isThread()) await channel.setArchived(true);
+          // Only drop the record once the archive actually succeeded, so a
+          // failed archive leaves the thread still manageable via /cc.
+          await workspaceStore.remove(i.channelId);
+          await i.editReply('Closing this workspace. 👋');
+        } catch (e) {
+          await i.editReply(`Couldn't archive the thread: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        return;
+      }
+
+      // list
+      const mine = await workspaceStore.byOwner(i.user.id);
+      await i.reply({
+        content: mine.length
+          ? `Your private threads:\n${mine.map((w) => `• <#${w.threadId}> — ${w.name}`).join('\n')}`
+          : 'You have no private threads. Make one with `/cc create`.',
         ephemeral: true,
       });
       return;

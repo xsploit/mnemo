@@ -5,11 +5,18 @@
  * system to be quiet before doing background work.
  */
 const lastActive = new Map<string, number>();
+const lastChannel = new Map<string, string>();
 const dirty = new Set<string>();
 
-export function noteActivity(subjectId: string): void {
+export function noteActivity(subjectId: string, channelId?: string): void {
   lastActive.set(subjectId, Date.now());
+  if (channelId) lastChannel.set(subjectId, channelId);
   dirty.add(subjectId);
+}
+
+/** Where this subject was last talking — used to deliver dream announcements. */
+export function lastChannelFor(subjectId: string): string | null {
+  return lastChannel.get(subjectId) ?? null;
 }
 
 export function idleMinutes(subjectId: string): number {
