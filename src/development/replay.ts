@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { renderHistoryXml, type HistoryTurn } from '../bot/respond.js';
 import { config } from '../config.js';
+import { AffinityStore } from '../cognition/affinity.js';
+import { meetsSelfDeltaThreshold } from '../cognition/selfReflect.js';
 import type { ScoredMemory } from '../memory/types.js';
 import { DevelopmentEventStore, utilityKey } from './eventStore.js';
 import { classifyFollowup, rewardForSignal } from './outcomes.js';
@@ -45,6 +47,8 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
   checks.followupClassification = true;
   assert.equal(rewardForSignal('correction'), -1);
   assert.ok(rewardForSignal('positive_feedback') > 0);
+  assert.equal(rewardForSignal('follow_up_question'), 0);
+  assert.equal(rewardForSignal('topic_continuation'), 0);
   checks.outcomeRewards = true;
 
   const history: HistoryTurn[] = [
@@ -142,6 +146,7 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
     const positiveOutcome: SocialOutcomeEventData = {
       responseMessageId: 'response-1',
       authorId: 'user-1',
+      targetAuthor: true,
       signal: 'positive_feedback',
       reward: 0.85,
       source: 'message',
@@ -150,13 +155,24 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
     const correctionOutcome: SocialOutcomeEventData = {
       responseMessageId: 'response-2',
       authorId: 'user-1',
+      targetAuthor: true,
       signal: 'correction',
       reward: -1,
       source: 'message',
       detail: 'that is wrong',
     };
+    const externalOutcome: SocialOutcomeEventData = {
+      responseMessageId: 'response-2',
+      authorId: 'other-user',
+      targetAuthor: false,
+      signal: 'reaction_negative',
+      reward: -0.7,
+      source: 'reaction',
+      detail: '👎',
+    };
     await store.append({ kind: 'social_outcome', subjectId: 'user-1', data: positiveOutcome });
     await store.append({ kind: 'social_outcome', subjectId: 'user-1', data: correctionOutcome });
+    await store.append({ kind: 'social_outcome', subjectId: 'user-1', data: externalOutcome });
     await store.append({
       kind: 'prediction_resolution',
       subjectId: 'user-1',
@@ -171,6 +187,7 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
     });
     const observed = await computeObservedDevelopmentMetrics(store, 'user-1');
     assert.equal(observed.outcomes, 2);
+    assert.equal(observed.externalOutcomes, 1);
     assert.equal(observed.positiveRate, 0.5);
     assert.equal(observed.correctionRate, 0.5);
     assert.equal(observed.predictionPrecision, 1);
@@ -193,6 +210,33 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
     assert.equal((await getEffectiveDevelopmentPolicy(store, 'user-1')).maxPredictions, 2);
     assert.equal((await getEffectiveDevelopmentPolicy(store, 'other-user')).maxPredictions, config.development.maxPredictions);
     checks.promotedPolicyProjection = true;
+
+    const affinity = new AffinityStore(path.join(tempRoot, 'affinity.json'));
+    await affinity.observeInteraction('user-1', 'User One');
+    await affinity.applyOutcome({
+      userId: 'user-1',
+      userName: 'User One',
+      evidenceKey: 'outcome-evidence-1',
+      valence: 0.85,
+      warmth: 0.8,
+    });
+    await affinity.applyOutcome({
+      userId: 'user-1',
+      userName: 'User One',
+      evidenceKey: 'outcome-evidence-1',
+      valence: -1,
+      warmth: 0,
+    });
+    const affinityEntries = await affinity.list();
+    assert.equal(affinityEntries[0]?.interactions, 1);
+    assert.deepEqual(affinityEntries[0]?.evidenceKeys, ['outcome-evidence-1']);
+    assert.ok((affinityEntries[0]?.valenceEma ?? 0) > 0);
+    checks.relationshipEvidenceDedup = true;
+
+    assert.equal(meetsSelfDeltaThreshold(['a', 'b', 'c'], ['cycle-1'], 3, 2), false);
+    assert.equal(meetsSelfDeltaThreshold(['a', 'b'], ['cycle-1', 'cycle-2'], 3, 2), false);
+    assert.equal(meetsSelfDeltaThreshold(['a', 'b', 'c'], ['cycle-1', 'cycle-2'], 3, 2), true);
+    checks.selfDeltaThresholds = true;
 
     const concurrentlyLoaded = new DevelopmentEventStore(path.join(tempRoot, 'events.jsonl'));
     const [, concurrentAppend] = await Promise.all([

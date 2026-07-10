@@ -8,6 +8,7 @@ import type {
 
 export interface ObservedDevelopmentMetrics {
   outcomes: number;
+  externalOutcomes: number;
   messageOutcomes: number;
   reactionOutcomes: number;
   positiveRate: number | null;
@@ -15,6 +16,8 @@ export interface ObservedDevelopmentMetrics {
   continuationRate: number | null;
   meanReward: number | null;
   predictionResolutions: number;
+  predictionsMade: number;
+  predictionCoverage: number | null;
   predictionPrecision: number | null;
   predictionBrier: number | null;
   utilityUpdates: number;
@@ -25,8 +28,13 @@ export async function computeObservedDevelopmentMetrics(
   subjectId?: string,
 ): Promise<ObservedDevelopmentMetrics> {
   const events = await store.list({ subjectId, limit: 5000 });
-  const outcomes = events.flatMap((event) => (isOutcome(event.data) ? [event.data] : []));
-  const resolutions = events.flatMap((event) => (isResolution(event.data) ? [event.data] : []));
+  const allOutcomes = events.flatMap((event) => (isOutcome(event.data) ? [event.data] : []));
+  const outcomes = allOutcomes.filter((outcome) => outcome.targetAuthor !== false);
+  const resolutionByPrediction = new Map<string, PredictionResolutionEventData>();
+  for (const event of events) {
+    if (isResolution(event.data)) resolutionByPrediction.set(event.data.predictionId, event.data);
+  }
+  const resolutions = [...resolutionByPrediction.values()];
   const utilityUpdates = events.filter((event) => isUtilityUpdate(event.data)).length;
   const predictionProbability = new Map<string, number>();
 
@@ -59,6 +67,7 @@ export async function computeObservedDevelopmentMetrics(
 
   return {
     outcomes: outcomes.length,
+    externalOutcomes: allOutcomes.length - outcomes.length,
     messageOutcomes: messageOutcomes.length,
     reactionOutcomes: outcomes.length - messageOutcomes.length,
     positiveRate: ratio(positives, outcomes.length),
@@ -66,6 +75,8 @@ export async function computeObservedDevelopmentMetrics(
     continuationRate: ratio(continuations, messageOutcomes.length),
     meanReward: outcomes.length ? mean(outcomes.map((outcome) => outcome.reward)) : null,
     predictionResolutions: resolutions.length,
+    predictionsMade: predictionProbability.size,
+    predictionCoverage: ratio(resolutions.length, predictionProbability.size),
     predictionPrecision: resolutions.length
       ? resolutions.filter((resolution) => resolution.matched).length / resolutions.length
       : null,
@@ -79,6 +90,7 @@ function isOutcome(value: unknown): value is SocialOutcomeEventData {
   return (
     typeof value.signal === 'string' &&
     typeof value.reward === 'number' &&
+    (value.targetAuthor === undefined || typeof value.targetAuthor === 'boolean') &&
     (value.source === 'message' || value.source === 'reaction')
   );
 }

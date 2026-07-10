@@ -126,6 +126,8 @@ export interface ResponseLinkEventData {
 export interface SocialOutcomeEventData {
   responseMessageId: string;
   authorId: string;
+  /** True only when feedback came from the person the response addressed. */
+  targetAuthor: boolean;
   signal: SocialSignal;
   reward: number;
   source: 'message' | 'reaction';

@@ -145,7 +145,13 @@ function metricValue(name: string, metrics: ReplayMetrics): number {
 }
 
 function isOutcome(value: unknown): value is SocialOutcomeEventData {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && typeof (value as { signal?: unknown }).signal === 'string');
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      typeof (value as { signal?: unknown }).signal === 'string' &&
+      (value as { targetAuthor?: unknown }).targetAuthor !== false,
+  );
 }
 
 function isResolution(value: unknown): value is PredictionResolutionEventData {

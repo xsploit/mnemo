@@ -2374,12 +2374,12 @@ async function renderDevelopmentView(subjectId: string, view: string): Promise<s
     const metrics = await computeObservedDevelopmentMetrics(getDevelopmentStore(), subjectId);
     return [
       'These are observed Discord outcomes, not model-judged or synthetic scores.',
-      `outcomes=${metrics.outcomes} messages=${metrics.messageOutcomes} reactions=${metrics.reactionOutcomes}`,
+      `outcomes=${metrics.outcomes} messages=${metrics.messageOutcomes} reactions=${metrics.reactionOutcomes} externalIgnored=${metrics.externalOutcomes}`,
       `positiveRate=${formatObservedRate(metrics.positiveRate)}`,
       `correctionRate=${formatObservedRate(metrics.correctionRate)}`,
       `continuationRate=${formatObservedRate(metrics.continuationRate)}`,
       `meanReward=${formatObservedNumber(metrics.meanReward)}`,
-      `predictionPrecision=${formatObservedRate(metrics.predictionPrecision)} n=${metrics.predictionResolutions}`,
+      `predictionPrecision=${formatObservedRate(metrics.predictionPrecision)} resolved=${metrics.predictionResolutions}/${metrics.predictionsMade} coverage=${formatObservedRate(metrics.predictionCoverage)}`,
       `predictionBrier=${formatObservedNumber(metrics.predictionBrier)} (lower is better)`,
       `utilityUpdates=${metrics.utilityUpdates}`,
     ].join('\n');

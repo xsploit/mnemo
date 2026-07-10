@@ -127,9 +127,12 @@ async function evaluateCandidate(candidate: DevelopmentEvent<SelfDeltaCandidateE
 
   const evidenceIds = [...new Set(allCandidates.flatMap((event) => event.evidenceIds))];
   const cycleIds = [...new Set(allCandidates.map((event) => event.data.cycleId))];
-  const thresholdMet =
-    evidenceIds.length >= config.development.selfDeltaMinEvidence &&
-    cycleIds.length >= config.development.selfDeltaMinCycles;
+  const thresholdMet = meetsSelfDeltaThreshold(
+    evidenceIds,
+    cycleIds,
+    config.development.selfDeltaMinEvidence,
+    config.development.selfDeltaMinCycles,
+  );
 
   let decision: SelfDeltaDecisionEventData['decision'] = 'deferred';
   let changed: string[] = [];
@@ -173,4 +176,13 @@ function isCandidateData(value: unknown): value is SelfDeltaCandidateEventData {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const data = value as Partial<SelfDeltaCandidateEventData>;
   return typeof data.cycleId === 'string' && typeof data.traitKey === 'string' && ['add', 'revise', 'drop'].includes(data.op ?? '');
+}
+
+export function meetsSelfDeltaThreshold(
+  evidenceIds: string[],
+  cycleIds: string[],
+  minEvidence: number,
+  minCycles: number,
+): boolean {
+  return new Set(evidenceIds).size >= minEvidence && new Set(cycleIds).size >= minCycles;
 }

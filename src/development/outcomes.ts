@@ -125,6 +125,7 @@ async function recordOutcome(args: {
   const data: SocialOutcomeEventData = {
     responseMessageId: args.link.data.responseMessageId,
     authorId: args.authorId,
+    targetAuthor: args.authorId === args.link.data.authorId,
     signal: args.signal,
     reward: args.reward,
     source: args.source,
@@ -140,27 +141,29 @@ async function recordOutcome(args: {
   });
   if (alreadyRecorded) return;
 
-  await Promise.all([
-    recordUtilityUpdates({
-      targetType: 'memory',
-      targetIds: args.link.data.memoryIds,
-      reward: args.reward,
-      outcomeId: outcome.id,
-      subjectId: args.link.subjectId,
-      channelId: args.link.channelId,
-      evidenceIds: outcome.evidenceIds,
-    }),
-    recordUtilityUpdates({
-      targetType: 'strategy',
-      targetIds: args.link.data.strategyKeys,
-      reward: args.reward,
-      outcomeId: outcome.id,
-      subjectId: args.link.subjectId,
-      channelId: args.link.channelId,
-      evidenceIds: outcome.evidenceIds,
-    }),
-    resolvePredictions(args.link, outcome),
-  ]);
+  if (data.targetAuthor) {
+    await Promise.all([
+      recordUtilityUpdates({
+        targetType: 'memory',
+        targetIds: args.link.data.memoryIds,
+        reward: args.reward,
+        outcomeId: outcome.id,
+        subjectId: args.link.subjectId,
+        channelId: args.link.channelId,
+        evidenceIds: outcome.evidenceIds,
+      }),
+      recordUtilityUpdates({
+        targetType: 'strategy',
+        targetIds: args.link.data.strategyKeys,
+        reward: args.reward,
+        outcomeId: outcome.id,
+        subjectId: args.link.subjectId,
+        channelId: args.link.channelId,
+        evidenceIds: outcome.evidenceIds,
+      }),
+      resolvePredictions(args.link, outcome),
+    ]);
+  }
 
   if (args.authorId === args.link.data.authorId && Math.abs(args.reward) >= 0.5) {
     await affinityStore.applyOutcome({
@@ -179,10 +182,14 @@ async function resolvePredictions(
 ): Promise<void> {
   if (!link.data.cognitiveStateId || link.data.predictionIds.length === 0) return;
   const stateEvent = await getDevelopmentStore().get(link.data.cognitiveStateId);
-  const stateData = stateEvent?.data as CognitiveStateEventData | undefined;
-  const predictions = stateData?.state?.predictions ?? [];
+  const predictions = isCognitiveStateData(stateEvent?.data) ? stateEvent.data.state.predictions : [];
+  const resolved = new Set(
+    (await getDevelopmentStore().list({ kinds: ['prediction_resolution'], subjectId: link.subjectId, limit: 1000 }))
+      .flatMap((event) => (isPredictionResolutionData(event.data) ? [event.data.predictionId] : [])),
+  );
   for (const prediction of predictions) {
     if (!link.data.predictionIds.includes(prediction.id)) continue;
+    if (resolved.has(prediction.id)) continue;
     const matched = signalsMatch(prediction.signal, outcome.data.signal);
     const reward = matched ? 1 : -0.25;
     const data: PredictionResolutionEventData = {
@@ -264,9 +271,9 @@ export function rewardForSignal(signal: SocialSignal): number {
     case 'correction':
       return -1;
     case 'follow_up_question':
-      return 0.2;
+      return 0;
     case 'topic_continuation':
-      return 0.1;
+      return 0;
     default:
       return 0;
   }
@@ -283,6 +290,22 @@ function isResponseLinkData(value: unknown): value is ResponseLinkEventData {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const data = value as Partial<ResponseLinkEventData>;
   return typeof data.responseMessageId === 'string' && Array.isArray(data.memoryIds) && Array.isArray(data.predictionIds);
+}
+
+function isPredictionResolutionData(value: unknown): value is PredictionResolutionEventData {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return typeof (value as { predictionId?: unknown }).predictionId === 'string';
+}
+
+function isCognitiveStateData(value: unknown): value is CognitiveStateEventData {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const state = (value as { state?: unknown }).state;
+  return Boolean(
+    state &&
+      typeof state === 'object' &&
+      !Array.isArray(state) &&
+      Array.isArray((state as { predictions?: unknown }).predictions),
+  );
 }
 
 function clamp(value: string, maxChars: number): string {
