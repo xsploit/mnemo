@@ -20,6 +20,15 @@ import {
   listBotGuilds,
   readBotGuildActivity,
 } from './guildOps.js';
+import {
+  ownerManageChannel,
+  ownerManageMember,
+  ownerManageMessage,
+  ownerManageRole,
+  ownerManageThread,
+  ownerManageWebhook,
+  ownerSendDm,
+} from './ownerDiscordOps.js';
 
 export interface DiscordToolScope {
   channelId: string;
@@ -82,6 +91,13 @@ export function createDiscordReadTools(scope: DiscordToolScope): ToolSet {
                 'discord_inspect_bot_guild',
                 'discord_read_bot_guild_activity',
                 'discord_create_owner_invite',
+                'discord_send_dm',
+                'discord_manage_message',
+                'discord_manage_channel',
+                'discord_manage_thread',
+                'discord_manage_role',
+                'discord_manage_member',
+                'discord_manage_webhook',
                 'discord_get_application_info',
               ]
             : []),
@@ -543,6 +559,145 @@ function addOwnerReadTools(tools: ToolSet, scope: DiscordToolScope): void {
         maxAgeSeconds: invite.maxAgeSeconds,
         maxUses: invite.maxUses,
       };
+    },
+  });
+  tools.discord_send_dm = tool({
+    description: 'Owner-only write. Send a DM from the bot only when the configured owner explicitly asks for it.',
+    inputSchema: z.object({
+      user_id: z.string().min(1).max(40),
+      message: z.string().min(1).max(1900),
+    }),
+    execute: async ({ user_id, message }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      return ownerSendDm(scope.client, user_id, message);
+    },
+  });
+  tools.discord_manage_message = tool({
+    description:
+      'Owner-only write. Send, edit, delete, or react to a Discord message in any accessible channel. Use only for an explicit owner request.',
+    inputSchema: z.object({
+      action: z.enum(['send', 'edit', 'delete', 'react']),
+      channel_id: z.string().min(1).max(40),
+      message_id: z.string().min(1).max(40).optional(),
+      content: z.string().min(1).max(1900).optional(),
+      emoji: z.string().min(1).max(100).optional(),
+    }),
+    execute: async ({ action, channel_id, message_id, content, emoji }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      return ownerManageMessage(scope.client, { action, channelId: channel_id, messageId: message_id, content, emoji });
+    },
+  });
+  tools.discord_manage_channel = tool({
+    description:
+      'Owner-only write. Create, edit, or delete a text channel in any guild the bot is in. Deletion requires an explicit owner request and Discord ManageChannels.',
+    inputSchema: z.object({
+      action: z.enum(['create', 'edit', 'delete']),
+      guild_id: z.string().min(1).max(40),
+      channel_id: z.string().min(1).max(40).optional(),
+      name: z.string().min(1).max(100).optional(),
+      topic: z.string().max(1024).optional(),
+      parent_id: z.string().min(1).max(40).optional(),
+      reason: z.string().max(400).optional(),
+    }),
+    execute: async ({ action, guild_id, channel_id, name, topic, parent_id, reason }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      return ownerManageChannel(scope.client, {
+        action,
+        guildId: guild_id,
+        channelId: channel_id,
+        name,
+        topic,
+        parentId: parent_id,
+        reason,
+      });
+    },
+  });
+  tools.discord_manage_thread = tool({
+    description: 'Owner-only write. Create, archive, unarchive, lock, or unlock a thread after checking channel permissions.',
+    inputSchema: z.object({
+      action: z.enum(['create', 'archive', 'unarchive', 'lock', 'unlock']),
+      channel_id: z.string().min(1).max(40),
+      name: z.string().min(1).max(100).optional(),
+      reason: z.string().max(400).optional(),
+    }),
+    execute: async ({ action, channel_id, name, reason }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      return ownerManageThread(scope.client, { action, channelId: channel_id, name, reason });
+    },
+  });
+  tools.discord_manage_role = tool({
+    description:
+      'Owner-only write. Create/edit/delete roles or add/remove a role from a member. Discord ManageRoles and role hierarchy are enforced.',
+    inputSchema: z.object({
+      action: z.enum(['create', 'edit', 'delete', 'add_to_member', 'remove_from_member']),
+      guild_id: z.string().min(1).max(40),
+      role_id: z.string().min(1).max(40).optional(),
+      user_id: z.string().min(1).max(40).optional(),
+      name: z.string().min(1).max(100).optional(),
+      color: z.string().max(7).optional(),
+      permissions: z.array(z.string().min(1).max(60)).max(50).optional(),
+      reason: z.string().max(400).optional(),
+    }),
+    execute: async ({ action, guild_id, role_id, user_id, name, color, permissions, reason }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      return ownerManageRole(scope.client, {
+        action,
+        guildId: guild_id,
+        roleId: role_id,
+        userId: user_id,
+        name,
+        color,
+        permissions,
+        reason,
+      });
+    },
+  });
+  tools.discord_manage_member = tool({
+    description:
+      'Owner-only write. Timeout, clear timeout, kick, ban, unban, or change a nickname. Discord permissions and role hierarchy are enforced.',
+    inputSchema: z.object({
+      action: z.enum(['timeout', 'clear_timeout', 'kick', 'ban', 'unban', 'nickname']),
+      guild_id: z.string().min(1).max(40),
+      user_id: z.string().min(1).max(40),
+      duration_minutes: z.number().int().min(1).max(40320).optional(),
+      nickname: z.string().max(32).optional(),
+      delete_message_seconds: z.number().int().min(0).max(604800).optional(),
+      reason: z.string().max(400).optional(),
+    }),
+    execute: async ({ action, guild_id, user_id, duration_minutes, nickname, delete_message_seconds, reason }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      return ownerManageMember(scope.client, {
+        action,
+        guildId: guild_id,
+        userId: user_id,
+        durationMinutes: duration_minutes,
+        nickname,
+        deleteMessageSeconds: delete_message_seconds,
+        reason,
+      });
+    },
+  });
+  tools.discord_manage_webhook = tool({
+    description:
+      'Owner-only write. List/create/send/delete webhooks in accessible channels. ManageWebhooks is checked for channel operations.',
+    inputSchema: z.object({
+      action: z.enum(['list', 'create', 'send', 'delete']),
+      channel_id: z.string().min(1).max(40).optional(),
+      webhook_id: z.string().min(1).max(40).optional(),
+      name: z.string().min(1).max(80).optional(),
+      content: z.string().min(1).max(1900).optional(),
+      reason: z.string().max(400).optional(),
+    }),
+    execute: async ({ action, channel_id, webhook_id, name, content, reason }) => {
+      if (!scope.client) throw new Error('Discord client is unavailable.');
+      return ownerManageWebhook(scope.client, {
+        action,
+        channelId: channel_id,
+        webhookId: webhook_id,
+        name,
+        content,
+        reason,
+      });
     },
   });
   tools.discord_get_application_info = tool({
