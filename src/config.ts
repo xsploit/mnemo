@@ -285,7 +285,7 @@ export const config = {
     selfDeltaMinCycles: Math.max(2, num('DEVELOPMENT_SELF_DELTA_MIN_CYCLES', 2)),
     policyLabEnabled: bool('DEVELOPMENT_POLICY_LAB', true),
     /** No external service by default. Letta and other adapters are explicit opt-ins later. */
-    shadowProvider: opt('DEVELOPMENT_SHADOW_PROVIDER', 'local-baseline').toLowerCase(),
+    shadowProvider: opt('DEVELOPMENT_SHADOW_PROVIDER', 'local-diversity').toLowerCase(),
   },
   db: {
     url: opt('DATABASE_URL') || undefined,

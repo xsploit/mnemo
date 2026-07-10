@@ -21,6 +21,10 @@ export interface ObservedDevelopmentMetrics {
   predictionPrecision: number | null;
   predictionBrier: number | null;
   utilityUpdates: number;
+  shadowRetrievals: number;
+  shadowAcceptedRate: number | null;
+  shadowMeanLatencyMs: number | null;
+  shadowMeanJaccard: number | null;
 }
 
 export async function computeObservedDevelopmentMetrics(
@@ -36,6 +40,12 @@ export async function computeObservedDevelopmentMetrics(
   }
   const resolutions = [...resolutionByPrediction.values()];
   const utilityUpdates = events.filter((event) => isUtilityUpdate(event.data)).length;
+  const shadowRetrievals = events.flatMap((event) => (isShadowRetrieval(event.data) ? [event.data] : []));
+  const shadowJaccards = shadowRetrievals.flatMap((result) => {
+    const match = /\bjaccard=([0-9.]+)/i.exec(result.detail);
+    const value = match ? Number(match[1]) : Number.NaN;
+    return Number.isFinite(value) ? [value] : [];
+  });
   const predictionProbability = new Map<string, number>();
 
   for (const event of events) {
@@ -82,6 +92,10 @@ export async function computeObservedDevelopmentMetrics(
       : null,
     predictionBrier: brierTerms.length ? mean(brierTerms) : null,
     utilityUpdates,
+    shadowRetrievals: shadowRetrievals.length,
+    shadowAcceptedRate: ratio(shadowRetrievals.filter((result) => result.accepted).length, shadowRetrievals.length),
+    shadowMeanLatencyMs: shadowRetrievals.length ? mean(shadowRetrievals.map((result) => result.latencyMs)) : null,
+    shadowMeanJaccard: shadowJaccards.length ? mean(shadowJaccards) : null,
   };
 }
 
@@ -123,6 +137,21 @@ function isUtilityUpdate(value: unknown): value is UtilityUpdateEventData {
       typeof value.targetId === 'string' &&
       typeof value.next === 'number' &&
       typeof value.outcomeId === 'string',
+  );
+}
+
+function isShadowRetrieval(value: unknown): value is {
+  operation: 'retrieve';
+  accepted: boolean;
+  latencyMs: number;
+  detail: string;
+} {
+  return Boolean(
+    isRecord(value) &&
+      value.operation === 'retrieve' &&
+      typeof value.accepted === 'boolean' &&
+      typeof value.latencyMs === 'number' &&
+      typeof value.detail === 'string',
   );
 }
 
