@@ -59,7 +59,7 @@ The cognitive prepass replaces the current free-form inner voice. It produces in
 
 Failure is non-fatal. The public response falls back to the existing persona, memory, affinity, and mood path.
 
-The live default is deterministic because a 2026-07-10 same-packet benchmark measured DeepSeek V4 Flash at 14.81s for valid schema output, while V4 Pro took 38.28s across retries and produced no JSON object. Flash remains the structured/dream worker model; Pro remains the main character model. Adaptive model compilation is available for explicit experiments but is not allowed to impose that serial latency on ordinary chat.
+The live default is deterministic because a 2026-07-10 same-packet probe measured DeepSeek V4 Flash at 14.81s for valid schema output, while V4 Pro took 38.28s across retries and produced no JSON object. This is operational evidence from one DeepSeek probe, not a provider-wide latency law. Flash remains the structured/dream worker model; Pro remains the main character model. Adaptive compilation is explicit, uses a 20s default timeout that can actually admit the measured Flash result, and records timeout fallback separately from model errors.
 
 ## Sleep Loop
 
@@ -80,7 +80,7 @@ Retrieval stays two-stage:
 1. semantic/temporal candidate generation using the current local embedding and continuity logic;
 2. small bounded reranking boost from observed utility.
 
-Utility is updated by an exponential moving average and scoped by target plus context. Positive evidence includes positive reactions, explicit confirmation, successful factual callbacks, and prediction matches. Negative evidence includes corrections, negative reactions, and repeated recall failures. Missing feedback is neutral.
+Utility is updated by an exponential moving average and scoped by target plus context. Positive evidence currently includes positive reactions and direct explicit confirmation. Negative evidence includes direct corrections and negative reactions. Neutral follow-ups and missing feedback do not update memory or strategy utility. Prediction utility is scored separately when a prediction matches or when a non-zero contradictory signal arrives.
 
 Utility never overrides a minimum semantic-relevance gate, so popular but irrelevant memories cannot dominate recall.
 
@@ -91,16 +91,16 @@ Shadow adapters receive the same committed interaction event after the live turn
 Initial adapters:
 
 - `local-baseline`: exercises the adapter and evaluation path with no service dependency.
-- `local-diversity`: reranks the authoritative candidates with lexical overlap and memory-kind diversity, then logs overlap without affecting the live prompt.
+- `local-diversity`: reranks a wider pre-utility candidate pool using lexical overlap and memory-kind diversity only, then records structured Jaccard/rank metrics against the live top-k without affecting the prompt.
 - `letta`: optional later, enabled only by explicit configuration and credentials.
 
 Other systems such as A-MEM, MIRIX, or MemOS should first be evaluated through the same adapter contract rather than replacing Hikari's store.
 
 ## Policy Lab
 
-Dreaming may propose bounded policy candidates: retrieval weights, candidate counts, continuity windows, cognitive-prepass thresholds, or context budgets. It cannot directly rewrite the persona or activate a proposal.
+Dreaming currently proposes one bounded policy candidate with a defensible recorded counterfactual: reducing the per-user maximum prediction count after enough low-precision resolutions. It cannot directly rewrite the persona or activate a proposal. Retrieval-weight changes are deliberately not auto-proposed until the log contains a valid counterfactual for them.
 
-Each candidate is replayed against a fixed fixture set and compared with the current policy. Promotion requires:
+Each candidate is replayed over recorded cognitive states, direct outcome attribution, v2 prediction resolutions, and turn traces, then compared with the current policy. The deterministic fixture suite separately protects control-plane invariants. Promotion requires:
 
 - no grounding regression;
 - no speaker-attribution regression;
@@ -109,7 +109,7 @@ Each candidate is replayed against a fixed fixture set and compared with the cur
 - bounded latency and context growth;
 - a measurable improvement in the candidate's target metric.
 
-Promoted decisions are projected from the append-only log into a small allowlist of subject-scoped runtime values. They never modify `.env`, source files, the persona, or another user's policy. Current allowlisted values are utility weight and maximum prediction count.
+Promoted decisions are projected from the append-only log into a small allowlist of subject-scoped runtime values. They never modify `.env`, source files, the persona, or another user's policy. Projection supports utility weight and maximum prediction count, but only maximum prediction count currently has an automatic candidate/evaluator path.
 
 ## Evaluation
 

@@ -59,13 +59,17 @@ export async function observeFollowupMessage(args: {
   channelId: string;
   authorId: string;
   authorName: string;
+  authorIsBot?: boolean;
   content: string;
   createdAt?: Date;
   referencedMessageId?: string | null;
+  /** True for a DM or an explicit mention. Replies are detected from referencedMessageId. */
+  directedAtBot?: boolean;
 }): Promise<void> {
-  if (!config.development.enabled || !args.content.trim()) return;
+  if (!config.development.enabled || args.authorIsBot || !args.content.trim()) return;
   const createdAt = args.createdAt ?? new Date();
   const referenced = args.referencedMessageId ? await responseLinkByMessageId(args.referencedMessageId) : null;
+  if (!referenced && !args.directedAtBot) return;
   const link = referenced ?? (await latestEligibleResponse(args.channelId, createdAt, args.authorId));
   if (!link) return;
   if (await outcomeMemoryPaused(link.subjectId, args.authorId)) return;
@@ -77,6 +81,7 @@ export async function observeFollowupMessage(args: {
     signal,
     reward: rewardForSignal(signal),
     source: 'message',
+    attribution: referenced ? 'reply' : 'addressed',
     detail: clamp(args.content, 500),
     evidenceId: `discord-message:${args.messageId}`,
     dedupeKey: `outcome:message:${args.messageId}:${link.data.responseMessageId}`,
@@ -106,6 +111,7 @@ export async function observeReaction(args: {
     signal,
     reward: rewardForSignal(signal),
     source: 'reaction',
+    attribution: 'reaction',
     detail: args.emoji,
     evidenceId: `discord-reaction:${args.responseMessageId}:${args.authorId}:${args.emoji}`,
     dedupeKey: `outcome:reaction:${args.responseMessageId}:${args.authorId}:${args.emoji}`,
@@ -119,6 +125,7 @@ async function recordOutcome(args: {
   signal: SocialSignal;
   reward: number;
   source: SocialOutcomeEventData['source'];
+  attribution: SocialOutcomeEventData['attribution'];
   detail: string;
   evidenceId: string;
   dedupeKey: string;
@@ -132,9 +139,10 @@ async function recordOutcome(args: {
     signal: args.signal,
     reward: args.reward,
     source: args.source,
+    attribution: args.attribution,
     detail: args.detail,
   };
-  const outcome = await store.append<SocialOutcomeEventData>({
+  const { event: outcome, created } = await store.appendWithStatus<SocialOutcomeEventData>({
     kind: 'social_outcome',
     subjectId: args.link.subjectId,
     channelId: args.link.channelId,
@@ -142,30 +150,32 @@ async function recordOutcome(args: {
     dedupeKey: args.dedupeKey,
     data,
   });
-  if (alreadyRecorded) return;
+  if (alreadyRecorded || !created) return;
 
   if (data.targetAuthor) {
-    await Promise.all([
-      recordUtilityUpdates({
-        targetType: 'memory',
-        targetIds: args.link.data.memoryIds,
-        reward: args.reward,
-        outcomeId: outcome.id,
-        subjectId: args.link.subjectId,
-        channelId: args.link.channelId,
-        evidenceIds: outcome.evidenceIds,
-      }),
-      recordUtilityUpdates({
-        targetType: 'strategy',
-        targetIds: args.link.data.strategyKeys,
-        reward: args.reward,
-        outcomeId: outcome.id,
-        subjectId: args.link.subjectId,
-        channelId: args.link.channelId,
-        evidenceIds: outcome.evidenceIds,
-      }),
-      resolvePredictions(args.link, outcome),
-    ]);
+    const utilityUpdates = !shouldUpdateOutcomeUtility(args.reward)
+      ? []
+      : [
+          recordUtilityUpdates({
+            targetType: 'memory',
+            targetIds: args.link.data.memoryIds,
+            reward: args.reward,
+            outcomeId: outcome.id,
+            subjectId: args.link.subjectId,
+            channelId: args.link.channelId,
+            evidenceIds: outcome.evidenceIds,
+          }),
+          recordUtilityUpdates({
+            targetType: 'strategy',
+            targetIds: args.link.data.strategyKeys,
+            reward: args.reward,
+            outcomeId: outcome.id,
+            subjectId: args.link.subjectId,
+            channelId: args.link.channelId,
+            evidenceIds: outcome.evidenceIds,
+          }),
+        ];
+    await Promise.all([...utilityUpdates, resolvePredictions(args.link, outcome)]);
   }
 
   if (args.authorId === args.link.data.authorId && Math.abs(args.reward) >= 0.5) {
@@ -187,15 +197,17 @@ async function resolvePredictions(
   const stateEvent = await getDevelopmentStore().get(link.data.cognitiveStateId);
   const predictions = isCognitiveStateData(stateEvent?.data) ? stateEvent.data.state.predictions : [];
   const resolved = new Set(
-    (await getDevelopmentStore().list({ kinds: ['prediction_resolution'], subjectId: link.subjectId, limit: 1000 }))
+    (await getDevelopmentStore().list({ kinds: ['prediction_resolution'], subjectId: link.subjectId }))
       .flatMap((event) => (isPredictionResolutionData(event.data) ? [event.data.predictionId] : [])),
   );
   for (const prediction of predictions) {
     if (!link.data.predictionIds.includes(prediction.id)) continue;
     if (resolved.has(prediction.id)) continue;
     const matched = signalsMatch(prediction.signal, outcome.data.signal);
+    if (!shouldResolvePrediction(prediction.signal, outcome.data.signal, outcome.data.reward)) continue;
     const reward = matched ? 1 : -0.25;
     const data: PredictionResolutionEventData = {
+      resolutionRule: 'match_or_signal_v2',
       predictionId: prediction.id,
       responseMessageId: link.data.responseMessageId,
       predictedSignal: prediction.signal,
@@ -203,14 +215,15 @@ async function resolvePredictions(
       matched,
       reward,
     };
-    const resolution = await getDevelopmentStore().append<PredictionResolutionEventData>({
+    const { event: resolution, created } = await getDevelopmentStore().appendWithStatus<PredictionResolutionEventData>({
       kind: 'prediction_resolution',
       subjectId: link.subjectId,
       channelId: link.channelId,
       evidenceIds: outcome.evidenceIds,
-      dedupeKey: `prediction-resolution:${prediction.id}:${outcome.id}`,
+      dedupeKey: `prediction-resolution:${prediction.id}`,
       data,
     });
+    if (!created) continue;
     await recordUtilityUpdates({
       targetType: 'prediction',
       targetIds: [prediction.signal],
@@ -239,8 +252,8 @@ async function latestEligibleResponse(
 }
 
 async function responseLinkByMessageId(messageId: string): Promise<DevelopmentEvent<ResponseLinkEventData> | null> {
-  const links = await getDevelopmentStore().list({ kinds: ['response_link'], limit: 500 });
   const cutoff = Date.now() - config.development.outcomeWindowHours * 3_600_000;
+  const links = await getDevelopmentStore().list({ kinds: ['response_link'], since: new Date(cutoff) });
   for (let index = links.length - 1; index >= 0; index--) {
     const link = links[index] as DevelopmentEvent<ResponseLinkEventData> | undefined;
     if (link && Date.parse(link.timestamp) >= cutoff && isResponseLinkData(link.data) && link.data.responseMessageId === messageId) return link;
@@ -289,6 +302,14 @@ function signalsMatch(predicted: SocialSignal, observed: SocialSignal): boolean 
   return false;
 }
 
+export function shouldResolvePrediction(predicted: SocialSignal, observed: SocialSignal, observedReward: number): boolean {
+  return signalsMatch(predicted, observed) || observedReward !== 0;
+}
+
+export function shouldUpdateOutcomeUtility(reward: number): boolean {
+  return Number.isFinite(reward) && reward !== 0;
+}
+
 function isResponseLinkData(value: unknown): value is ResponseLinkEventData {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const data = value as Partial<ResponseLinkEventData>;
@@ -297,7 +318,8 @@ function isResponseLinkData(value: unknown): value is ResponseLinkEventData {
 
 function isPredictionResolutionData(value: unknown): value is PredictionResolutionEventData {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  return typeof (value as { predictionId?: unknown }).predictionId === 'string';
+  const resolution = value as { predictionId?: unknown; resolutionRule?: unknown };
+  return resolution.resolutionRule === 'match_or_signal_v2' && typeof resolution.predictionId === 'string';
 }
 
 function isCognitiveStateData(value: unknown): value is CognitiveStateEventData {

@@ -19,20 +19,31 @@ export interface ShadowRetrieval {
   subjectId: string;
   channelId: string;
   query: string;
+  /** Actual live top-k ids, supplied separately from the wider pre-utility candidate pool. */
+  liveIds: string[];
   candidates: Array<{ id: string; kind: string; content: string; score: number }>;
   limit: number;
 }
 
+interface ShadowAdapterResult {
+  accepted: boolean;
+  itemIds: string[];
+  detail: string;
+  candidateCount?: number;
+  jaccard?: number;
+  rankAgreement?: number;
+}
+
 export interface ShadowMemoryAdapter {
   readonly name: string;
-  observe(input: ShadowObservation): Promise<{ accepted: boolean; itemIds: string[]; detail: string }>;
-  retrieve(input: ShadowRetrieval): Promise<{ accepted: boolean; itemIds: string[]; detail: string }>;
+  observe(input: ShadowObservation): Promise<ShadowAdapterResult>;
+  retrieve(input: ShadowRetrieval): Promise<ShadowAdapterResult>;
 }
 
 class LocalBaselineShadowAdapter implements ShadowMemoryAdapter {
   readonly name = 'local-baseline';
 
-  async observe(input: ShadowObservation): Promise<{ accepted: boolean; itemIds: string[]; detail: string }> {
+  async observe(input: ShadowObservation): Promise<ShadowAdapterResult> {
     const digest = crypto.createHash('sha256').update(input.content).digest('hex').slice(0, 20);
     return {
       accepted: true,
@@ -41,11 +52,14 @@ class LocalBaselineShadowAdapter implements ShadowMemoryAdapter {
     };
   }
 
-  async retrieve(input: ShadowRetrieval): Promise<{ accepted: boolean; itemIds: string[]; detail: string }> {
+  async retrieve(input: ShadowRetrieval): Promise<ShadowAdapterResult> {
     return {
       accepted: true,
-      itemIds: input.candidates.slice(0, input.limit).map((candidate) => candidate.id),
+      itemIds: input.liveIds.slice(0, input.limit),
       detail: 'local baseline mirrored the authoritative retrieval for comparison plumbing',
+      candidateCount: input.candidates.length,
+      jaccard: 1,
+      rankAgreement: 1,
     };
   }
 }
@@ -53,7 +67,7 @@ class LocalBaselineShadowAdapter implements ShadowMemoryAdapter {
 class LocalDiversityShadowAdapter implements ShadowMemoryAdapter {
   readonly name = 'local-diversity';
 
-  async observe(input: ShadowObservation): Promise<{ accepted: boolean; itemIds: string[]; detail: string }> {
+  async observe(input: ShadowObservation): Promise<ShadowAdapterResult> {
     const digest = crypto.createHash('sha256').update(input.content).digest('hex').slice(0, 20);
     return {
       accepted: true,
@@ -62,23 +76,23 @@ class LocalDiversityShadowAdapter implements ShadowMemoryAdapter {
     };
   }
 
-  async retrieve(input: ShadowRetrieval): Promise<{ accepted: boolean; itemIds: string[]; detail: string }> {
+  async retrieve(input: ShadowRetrieval): Promise<ShadowAdapterResult> {
     const queryTerms = terms(input.query);
     const remaining = input.candidates.map((candidate, liveRank) => ({ candidate, liveRank }));
     const selected: typeof remaining = [];
     const kindCounts = new Map<string, number>();
     while (remaining.length && selected.length < input.limit) {
       remaining.sort((left, right) => {
-        const leftScore = diversityScore(left.candidate, left.liveRank, queryTerms, kindCounts);
-        const rightScore = diversityScore(right.candidate, right.liveRank, queryTerms, kindCounts);
-        return rightScore - leftScore || left.liveRank - right.liveRank;
+        const leftScore = diversityScore(left.candidate, queryTerms, kindCounts);
+        const rightScore = diversityScore(right.candidate, queryTerms, kindCounts);
+        return rightScore - leftScore || left.candidate.id.localeCompare(right.candidate.id);
       });
       const next = remaining.shift()!;
       selected.push(next);
       kindCounts.set(next.candidate.kind, (kindCounts.get(next.candidate.kind) ?? 0) + 1);
     }
     const itemIds = selected.map(({ candidate }) => candidate.id);
-    const liveIds = input.candidates.slice(0, input.limit).map((candidate) => candidate.id);
+    const liveIds = input.liveIds.slice(0, input.limit);
     const overlap = intersectionSize(new Set(liveIds), new Set(itemIds));
     const denominator = new Set([...liveIds, ...itemIds]).size;
     const rankAgreement = rankedAgreement(liveIds, itemIds);
@@ -86,6 +100,9 @@ class LocalDiversityShadowAdapter implements ShadowMemoryAdapter {
       accepted: true,
       itemIds,
       detail: `local lexical/diversity rerank; live overlap=${overlap}/${denominator || 1} jaccard=${(overlap / Math.max(1, denominator)).toFixed(3)} rankAgreement=${rankAgreement.toFixed(3)}`,
+      candidateCount: input.candidates.length,
+      jaccard: overlap / Math.max(1, denominator),
+      rankAgreement,
     };
   }
 }
@@ -169,6 +186,9 @@ export async function observeShadowRetrieval(input: ShadowRetrieval): Promise<vo
       accepted: result.accepted,
       itemIds: result.itemIds,
       detail: result.detail,
+      candidateCount: result.candidateCount,
+      jaccard: result.jaccard,
+      rankAgreement: result.rankAgreement,
       subjectId: input.subjectId,
       channelId: input.channelId,
       evidenceIds: [`discord-message:${input.requestId}`, ...input.candidates.map((item) => `memory:${item.id}`)],
@@ -218,15 +238,13 @@ function terms(value: string): Set<string> {
 
 function diversityScore(
   candidate: ShadowRetrieval['candidates'][number],
-  liveRank: number,
   queryTerms: Set<string>,
   kindCounts: Map<string, number>,
 ): number {
   const contentTerms = terms(candidate.content);
   const overlap = [...queryTerms].filter((term) => contentTerms.has(term)).length / Math.max(1, queryTerms.size);
-  const livePrior = 1 / (1 + liveRank);
   const kindPenalty = (kindCounts.get(candidate.kind) ?? 0) * 0.12;
-  return overlap * 0.55 + candidate.score * 0.3 + livePrior * 0.15 - kindPenalty;
+  return overlap - kindPenalty;
 }
 
 function intersectionSize(left: Set<string>, right: Set<string>): number {

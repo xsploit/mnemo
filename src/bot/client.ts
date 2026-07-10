@@ -107,22 +107,24 @@ export function createClient(): Client {
   client.on(Events.MessageCreate, async (msg: Message) => {
     if (!client.user) return;
     if (msg.author.id === client.user.id) return;
+    const isDM = !msg.guild;
+    const mentioned = msg.mentions.has(client.user.id);
     void observeFollowupMessage({
       messageId: msg.id,
       channelId: msg.channelId,
       authorId: msg.author.id,
       authorName: (msg.member?.displayName ?? msg.author.displayName) || msg.author.username,
+      authorIsBot: msg.author.bot,
       content: msg.cleanContent || msg.content,
       createdAt: msg.createdAt,
       referencedMessageId: msg.reference?.messageId ?? null,
+      directedAtBot: isDM || mentioned,
     }).catch((e: any) => log.warn('developmental follow-up skipped', e?.message ?? e));
     if (msg.author.bot) {
       await recordPassiveBotContext(msg);
       if (!getRespondToBots()) return;
     }
 
-    const isDM = !msg.guild;
-    const mentioned = msg.mentions.has(client.user.id);
     const isReplyToBot =
       msg.reference?.messageId != null &&
       (await msg

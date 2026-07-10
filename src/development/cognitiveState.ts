@@ -186,7 +186,8 @@ Choose a response intention that preserves Hikari's configured personality while
         warmthDelta: clampNumber(object.relationshipDelta.warmthDelta, -0.03, 0.03),
         evidenceIds: filterEvidence(object.relationshipDelta.evidenceIds, knownEvidence, currentEvidenceId),
       },
-      predictions: object.predictions
+      predictions: [...object.predictions]
+        .sort((left, right) => right.probability - left.probability)
         .slice(0, policy.maxPredictions)
         .map((prediction) => normalizePrediction(prediction, knownEvidence, currentEvidenceId)),
       memoryIds: args.memories.map((memory) => memory.id),
@@ -194,8 +195,17 @@ Choose a response intention that preserves Hikari's configured personality while
       compiler: 'model',
       };
     } catch (error: any) {
-      log.warn('model compiler failed; using deterministic state', error?.message ?? error);
-      state = fallbackState(args, currentEvidenceId, policy.maxPredictions, 'fallback');
+      const timedOut = isTimeoutError(error);
+      log.warn(
+        timedOut ? 'model compiler timed out; using deterministic state' : 'model compiler failed; using deterministic state',
+        error?.message ?? error,
+      );
+      state = fallbackState(
+        args,
+        currentEvidenceId,
+        policy.maxPredictions,
+        timedOut ? 'timeout_fallback' : 'error_fallback',
+      );
     }
   }
 
@@ -232,7 +242,7 @@ function fallbackState(
   args: CompileCognitiveStateArgs,
   evidenceId: string,
   maxPredictions: number,
-  compiler: 'deterministic' | 'fallback',
+  compiler: 'deterministic' | 'timeout_fallback' | 'error_fallback',
 ): CognitiveState {
   const question = /\?\s*$/.test(args.message) || /\b(what|why|how|when|where|who|can|could|should|do|did|is|are)\b/i.test(args.message);
   const correction = /\b(no[, ]|wrong|actually|not what i|you forgot|you missed|that's not|that is not)\b/i.test(args.message);
@@ -322,10 +332,15 @@ export function shouldUseModelCompiler(args: Pick<CompileCognitiveStateArgs, 'me
   if (config.development.cognitiveMode === 'always') return true;
   if (config.development.cognitiveMode === 'deterministic') return false;
   const sociallyComplex =
-    args.message.length >= 500 ||
     /\b(how do you feel|what do you think of me|do you trust|are we friends|our relationship|between us|you seem|you sound|why did you react|what did you mean|are you upset|are you mad|do you like me)\b/i.test(args.message);
   if (sociallyComplex) return true;
   return stableFraction(args.messageId) < config.development.cognitiveSampleRate;
+}
+
+function isTimeoutError(error: unknown): boolean {
+  const name = error && typeof error === 'object' ? String((error as { name?: unknown }).name ?? '') : '';
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /timeout/i.test(name) || /timed?\s*out|abortsignal\.timeout/i.test(message);
 }
 
 function stableFraction(value: string): number {

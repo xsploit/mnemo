@@ -17,18 +17,34 @@ const DEFAULT_PATH = config.development.eventPath;
 
 export class DevelopmentEventStore {
   private writeTail: Promise<void> = Promise.resolve();
+  private appendTail: Promise<unknown> = Promise.resolve();
   private loadPromise: Promise<void> | null = null;
   private loaded = false;
   private events: DevelopmentEvent[] = [];
   private dedupeKeys = new Set<string>();
+  private utilityCache: Map<string, UtilityProjection> | null = null;
 
   constructor(private readonly filePath = DEFAULT_PATH) {}
 
   async append<T>(input: DevelopmentEventInput<T>): Promise<DevelopmentEvent<T>> {
+    return (await this.appendWithStatus(input)).event;
+  }
+
+  async appendWithStatus<T>(
+    input: DevelopmentEventInput<T>,
+  ): Promise<{ event: DevelopmentEvent<T>; created: boolean }> {
+    const operation = this.appendTail.then(() => this.appendInternal(input));
+    this.appendTail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async appendInternal<T>(
+    input: DevelopmentEventInput<T>,
+  ): Promise<{ event: DevelopmentEvent<T>; created: boolean }> {
     await this.ensureLoaded();
     if (input.dedupeKey) {
       const existing = this.events.find((event) => event.dedupeKey === input.dedupeKey);
-      if (existing) return existing as DevelopmentEvent<T>;
+      if (existing) return { event: existing as DevelopmentEvent<T>, created: false };
     }
 
     const event: DevelopmentEvent<T> = {
@@ -45,6 +61,9 @@ export class DevelopmentEventStore {
 
     this.events.push(event as DevelopmentEvent);
     if (event.dedupeKey) this.dedupeKeys.add(event.dedupeKey);
+    if (this.utilityCache && event.kind === 'utility_update' && isUtilityUpdate(event.data)) {
+      applyUtilityEvent(this.utilityCache, event as DevelopmentEvent<UtilityUpdateEventData>);
+    }
     this.writeTail = this.writeTail.then(async () => {
       await fs.mkdir(path.dirname(this.filePath), { recursive: true });
       await fs.appendFile(this.filePath, `${JSON.stringify(event)}\n`, 'utf8');
@@ -54,11 +73,12 @@ export class DevelopmentEventStore {
     } catch (error: any) {
       this.events = this.events.filter((candidate) => candidate.id !== event.id);
       if (event.dedupeKey) this.dedupeKeys.delete(event.dedupeKey);
+      this.utilityCache = null;
       this.writeTail = Promise.resolve();
       log.error('append failed', error?.message ?? error);
       throw error;
     }
-    return event;
+    return { event, created: true };
   }
 
   async list(args: {
@@ -91,40 +111,39 @@ export class DevelopmentEventStore {
   }
 
   async utilityProjection(): Promise<Map<string, UtilityProjection>> {
-    const updates = await this.list({ kinds: ['utility_update'] });
-    const projection = new Map<string, UtilityProjection>();
-    for (const event of updates) {
-      const data = event.data as unknown as UtilityUpdateEventData;
-      if (!isUtilityUpdate(data)) continue;
-      const key = utilityKey(data.targetType, data.targetId, data.contextKey);
-      projection.set(key, {
-        targetType: data.targetType,
-        targetId: data.targetId,
-        contextKey: data.contextKey,
-        value: clamp(data.next, -1, 1),
-        updates: (projection.get(key)?.updates ?? 0) + 1,
-        lastUpdatedAt: event.timestamp,
-      });
+    await this.ensureLoaded();
+    if (!this.utilityCache) {
+      this.utilityCache = new Map<string, UtilityProjection>();
+      for (const event of this.events) {
+        if (event.kind === 'utility_update' && isUtilityUpdate(event.data)) {
+          applyUtilityEvent(this.utilityCache, event as DevelopmentEvent<UtilityUpdateEventData>);
+        }
+      }
     }
-    return projection;
+    return new Map(this.utilityCache);
   }
 
   async reload(): Promise<void> {
+    await this.appendTail;
     await this.writeTail;
     this.loaded = false;
     this.loadPromise = null;
     this.events = [];
     this.dedupeKeys.clear();
+    this.utilityCache = null;
     await this.ensureLoaded();
   }
 
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) return;
     if (!this.loadPromise) {
-      this.loadPromise = this.loadFromDisk().finally(() => {
-        this.loaded = true;
-        this.loadPromise = null;
-      });
+      this.loadPromise = this.loadFromDisk()
+        .then(() => {
+          this.loaded = true;
+        })
+        .finally(() => {
+          this.loadPromise = null;
+        });
     }
     await this.loadPromise;
   }
@@ -134,8 +153,8 @@ export class DevelopmentEventStore {
     try {
       raw = await fs.readFile(this.filePath, 'utf8');
     } catch (error: any) {
-      if (error?.code !== 'ENOENT') log.warn('could not load development events', error?.message ?? error);
-      return;
+      if (error?.code === 'ENOENT') return;
+      throw error;
     }
     for (const line of raw.split(/\r?\n/)) {
       if (!line.trim()) continue;
@@ -150,6 +169,22 @@ export class DevelopmentEventStore {
     }
     log.info(`loaded ${this.events.length} developmental event(s)`);
   }
+}
+
+function applyUtilityEvent(
+  projection: Map<string, UtilityProjection>,
+  event: DevelopmentEvent<UtilityUpdateEventData>,
+): void {
+  const data = event.data;
+  const key = utilityKey(data.targetType, data.targetId, data.contextKey);
+  projection.set(key, {
+    targetType: data.targetType,
+    targetId: data.targetId,
+    contextKey: data.contextKey,
+    value: clamp(data.next, -1, 1),
+    updates: (projection.get(key)?.updates ?? 0) + 1,
+    lastUpdatedAt: event.timestamp,
+  });
 }
 
 export function utilityKey(targetType: string, targetId: string, contextKey = 'global'): string {

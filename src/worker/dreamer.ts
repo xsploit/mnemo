@@ -10,7 +10,8 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { MemoryRecord } from '../memory/types.js';
 import { rehearseFuture } from '../development/rehearse.js';
-import { diagnosePolicyCandidate } from '../development/policyLab.js';
+import { diagnosePolicyCandidate, evaluateDiagnosedPolicyCandidate } from '../development/policyLab.js';
+import { activityVersion } from './activity.js';
 
 const log = logger('dreamer');
 
@@ -25,12 +26,14 @@ export interface DreamReport {
   simulations: number;
   simulationPreview: string | null;
   policyCandidate: string | null;
+  policyDecision: string | null;
   pruned: number;
   /** What changed in her own evolving self this cycle (baseline drift, self-notes). */
   selfEvolution: string[];
+  /** Activity generation captured by the cycle itself before ingest. */
+  throughActivityVersion: number;
 }
 
-let sleepTail: Promise<unknown> = Promise.resolve();
 const activeBySubject = new Map<string, Promise<DreamReport>>();
 
 /**
@@ -46,8 +49,7 @@ const activeBySubject = new Map<string, Promise<DreamReport>>();
 export function runSleepCycle(subjectId: string, opts: { lookbackHours?: number } = {}): Promise<DreamReport> {
   const active = activeBySubject.get(subjectId);
   if (active) return active;
-  const cycle = sleepTail.then(() => runSleepCycleInternal(subjectId, opts));
-  sleepTail = cycle.catch(() => undefined);
+  const cycle = runSleepCycleInternal(subjectId, opts);
   activeBySubject.set(subjectId, cycle);
   void cycle
     .finally(() => {
@@ -64,6 +66,7 @@ async function runSleepCycleInternal(subjectId: string, opts: { lookbackHours?: 
   const since = new Date(Date.now() - lookbackHours * 3_600_000);
 
   // 1. INGEST
+  const throughActivityVersion = activityVersion(subjectId);
   const observations = await store.recent(subjectId, ['episodic'], since, 60);
   log.info(`subject=${subjectId} ingesting ${observations.length} observations`);
 
@@ -78,8 +81,10 @@ async function runSleepCycleInternal(subjectId: string, opts: { lookbackHours?: 
     simulations: 0,
     simulationPreview: null,
     policyCandidate: null,
+    policyDecision: null,
     pruned: 0,
     selfEvolution: [],
+    throughActivityVersion,
   };
 
   if (observations.length === 0) return report;
@@ -151,6 +156,10 @@ async function runSleepCycleInternal(subjectId: string, opts: { lookbackHours?: 
     report.policyCandidate = candidate
       ? `${candidate.data.parameter}: ${candidate.data.currentValue} -> ${candidate.data.proposedValue}`
       : null;
+    if (candidate) {
+      const decision = await evaluateDiagnosedPolicyCandidate(candidate);
+      report.policyDecision = `${decision.data.decision}: ${decision.data.parameter}`;
+    }
   } catch (e: any) {
     log.warn(`policy diagnosis failed for ${subjectId}`, e?.message ?? e);
   }

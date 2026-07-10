@@ -76,11 +76,12 @@ export async function consolidate(
   const visibleFactIds = new Set(existingFacts.map((fact) => fact.id));
   const knownContents = new Set(existingFacts.filter((fact) => !fact.validTo).map((fact) => normalizeFact(fact.content)));
   let operationFailures = 0;
+  const retryObservationIds = new Set<string>();
 
   for (const op of object.operations) {
+    const sourceIds = [...new Set(op.basis.map((index) => observations[index]?.id).filter((id): id is string => Boolean(id)))];
     try {
       if (op.op === 'NOOP') continue;
-      const sourceIds = [...new Set(op.basis.map((index) => observations[index]?.id).filter((id): id is string => Boolean(id)))];
       if (sourceIds.length === 0) {
         operationFailures += 1;
         log.warn(`rejected ${op.op} without a valid observation basis`);
@@ -140,14 +141,17 @@ export async function consolidate(
       }
     } catch (e: any) {
       operationFailures += 1;
+      for (const id of sourceIds) retryObservationIds.add(id);
       log.warn(`op ${op.op} failed`, e?.message);
     }
   }
 
-  if (operationFailures === 0) {
-    await store.markProcessed(observations.map((o) => o.id));
-  } else {
-    log.warn(`subject=${subjectId} left ${observations.length} observation(s) retryable after ${operationFailures} failed operation(s)`);
+  const processedIds = observations.map((observation) => observation.id).filter((id) => !retryObservationIds.has(id));
+  if (processedIds.length) await store.markProcessed(processedIds);
+  if (retryObservationIds.size) {
+    log.warn(
+      `subject=${subjectId} left ${retryObservationIds.size} observation(s) retryable after ${operationFailures} failed operation(s)`,
+    );
   }
   log.info(
     `subject=${subjectId} +${result.added.length} ~${result.updated} -${result.deleted} from ${observations.length} obs`,

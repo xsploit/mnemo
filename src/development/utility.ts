@@ -72,7 +72,7 @@ export async function recordUtilityUpdates(args: {
   evidenceIds: string[];
   contextKey?: string;
 }): Promise<void> {
-  if (!config.development.enabled || args.targetIds.length === 0) return;
+  if (!config.development.enabled || args.targetIds.length === 0 || args.reward === 0) return;
   const store = getDevelopmentStore();
   const contextKey = args.contextKey ?? 'global';
   const reward = clamp(args.reward, -1, 1);

@@ -33,7 +33,9 @@ export async function computeObservedDevelopmentMetrics(
   subjectId?: string,
 ): Promise<ObservedDevelopmentMetrics> {
   const events = await store.list({ subjectId, limit: 5000 });
-  const allOutcomes = events.flatMap((event) => (isOutcome(event.data) ? [event.data] : []));
+  const allOutcomes = events
+    .flatMap((event) => (isOutcome(event.data) ? [event.data] : []))
+    .filter((outcome) => outcome.attribution != null || outcome.source === 'reaction');
   const outcomes = allOutcomes.filter((outcome) => outcome.targetAuthor !== false);
   const resolutionByPrediction = new Map<string, PredictionResolutionEventData>();
   for (const event of events) {
@@ -43,11 +45,13 @@ export async function computeObservedDevelopmentMetrics(
   const utilityUpdates = events.filter((event) => isUtilityUpdate(event.data)).length;
   const shadowRetrievals = events.flatMap((event) => (isShadowRetrieval(event.data) ? [event.data] : []));
   const shadowJaccards = shadowRetrievals.flatMap((result) => {
+    if (typeof result.jaccard === 'number' && Number.isFinite(result.jaccard)) return [result.jaccard];
     const match = /\bjaccard=([0-9.]+)/i.exec(result.detail);
     const value = match ? Number(match[1]) : Number.NaN;
     return Number.isFinite(value) ? [value] : [];
   });
   const shadowRankAgreements = shadowRetrievals.flatMap((result) => {
+    if (typeof result.rankAgreement === 'number' && Number.isFinite(result.rankAgreement)) return [result.rankAgreement];
     const match = /\brankAgreement=([0-9.]+)/i.exec(result.detail);
     const value = match ? Number(match[1]) : Number.NaN;
     return Number.isFinite(value) ? [value] : [];
@@ -119,7 +123,8 @@ function isOutcome(value: unknown): value is SocialOutcomeEventData {
 function isResolution(value: unknown): value is PredictionResolutionEventData {
   return (
     isRecord(value) &&
-    typeof value.predictionId === 'string' &&
+      value.resolutionRule === 'match_or_signal_v2' &&
+      typeof value.predictionId === 'string' &&
     typeof value.matched === 'boolean'
   );
 }
@@ -152,6 +157,8 @@ function isShadowRetrieval(value: unknown): value is {
   accepted: boolean;
   latencyMs: number;
   detail: string;
+  jaccard?: number;
+  rankAgreement?: number;
 } {
   return Boolean(
     isRecord(value) &&

@@ -105,7 +105,7 @@ export interface CognitiveState {
   predictions: SocialPrediction[];
   memoryIds: string[];
   evidenceIds: string[];
-  compiler: 'model' | 'deterministic' | 'fallback';
+  compiler: 'model' | 'deterministic' | 'timeout_fallback' | 'error_fallback';
 }
 
 export interface CognitiveStateEventData {
@@ -131,10 +131,12 @@ export interface SocialOutcomeEventData {
   signal: SocialSignal;
   reward: number;
   source: 'message' | 'reaction';
+  attribution: 'reply' | 'addressed' | 'reaction';
   detail: string;
 }
 
 export interface PredictionResolutionEventData {
+  resolutionRule: 'match_or_signal_v2';
   predictionId: string;
   responseMessageId: string;
   predictedSignal: SocialSignal;
@@ -210,6 +212,9 @@ export interface ShadowMemoryResultEventData {
   accepted: boolean;
   itemIds: string[];
   detail: string;
+  candidateCount?: number;
+  jaccard?: number;
+  rankAgreement?: number;
 }
 
 export interface UtilityProjection {

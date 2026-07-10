@@ -263,10 +263,11 @@ export const config = {
     /** Adaptive uses the model only for socially complex turns plus a stable sample. */
     cognitiveMode: (() => {
       const value = opt('DEVELOPMENT_COGNITIVE_MODE', 'deterministic').toLowerCase();
-      return value === 'always' || value === 'deterministic' ? value : 'adaptive';
+      return value === 'always' || value === 'adaptive' || value === 'deterministic' ? value : 'deterministic';
     })() as 'adaptive' | 'always' | 'deterministic',
     cognitiveSampleRate: Math.max(0, Math.min(1, num('DEVELOPMENT_COGNITIVE_SAMPLE_RATE', 0.05))),
-    cognitiveTimeoutMs: Math.max(500, Math.min(30_000, num('DEVELOPMENT_COGNITIVE_TIMEOUT_MS', 2500))),
+    /** DeepSeek V4 Flash measured about 15s for this schema; adaptive mode must allow a real sample to finish. */
+    cognitiveTimeoutMs: Math.max(500, Math.min(60_000, num('DEVELOPMENT_COGNITIVE_TIMEOUT_MS', 20_000))),
     /** A later message/reaction may resolve the latest response inside this window. */
     outcomeWindowHours: Math.max(1, num('DEVELOPMENT_OUTCOME_WINDOW_HOURS', 24)),
     /** Unreferenced follow-ups only attach implicitly for a short conversational window. */

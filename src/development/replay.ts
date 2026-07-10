@@ -11,7 +11,12 @@ import { FileMemoryPrivacyStore } from '../memory/privacy.js';
 import { rankedAgreement } from './shadow.js';
 import type { ScoredMemory } from '../memory/types.js';
 import { DevelopmentEventStore, utilityKey } from './eventStore.js';
-import { classifyFollowup, rewardForSignal } from './outcomes.js';
+import {
+  classifyFollowup,
+  rewardForSignal,
+  shouldResolvePrediction,
+  shouldUpdateOutcomeUtility,
+} from './outcomes.js';
 import { decidePolicyCandidate, type ReplayMetrics } from './policyLab.js';
 import { getEffectiveDevelopmentPolicy } from './effectivePolicy.js';
 import { computeObservedDevelopmentMetrics } from './observedMetrics.js';
@@ -53,6 +58,12 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
   assert.equal(rewardForSignal('follow_up_question'), 0);
   assert.equal(rewardForSignal('topic_continuation'), 0);
   checks.outcomeRewards = true;
+  assert.equal(shouldUpdateOutcomeUtility(0), false);
+  assert.equal(shouldUpdateOutcomeUtility(0.85), true);
+  assert.equal(shouldResolvePrediction('positive_feedback', 'topic_continuation', 0), false);
+  assert.equal(shouldResolvePrediction('topic_continuation', 'topic_continuation', 0), true);
+  assert.equal(shouldResolvePrediction('positive_feedback', 'correction', -1), true);
+  checks.signalBearingCredit = true;
 
   const history: HistoryTurn[] = [
     { messageId: '1', authorId: 'human-a', username: 'alpha', author: 'Alpha', content: '<b>one</b>' },
@@ -172,6 +183,14 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
     };
     await store.append({ kind: 'utility_update', evidenceIds: ['outcome-1'], data: utility });
     assert.equal((await store.utilityProjection()).get(utilityKey('memory', 'memory-1', 'global'))?.value, 0.2);
+    await store.append({
+      kind: 'utility_update',
+      evidenceIds: ['outcome-2'],
+      data: { ...utility, outcomeId: 'outcome-2', previous: 0.2, next: 0.4 },
+    });
+    const cachedUtility = (await store.utilityProjection()).get(utilityKey('memory', 'memory-1', 'global'));
+    assert.equal(cachedUtility?.value, 0.4);
+    assert.equal(cachedUtility?.updates, 2);
     checks.utilityProjection = true;
 
     const positiveOutcome: SocialOutcomeEventData = {
@@ -181,6 +200,7 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
       signal: 'positive_feedback',
       reward: 0.85,
       source: 'message',
+      attribution: 'reply',
       detail: 'exactly',
     };
     const correctionOutcome: SocialOutcomeEventData = {
@@ -190,6 +210,7 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
       signal: 'correction',
       reward: -1,
       source: 'message',
+      attribution: 'reply',
       detail: 'that is wrong',
     };
     const externalOutcome: SocialOutcomeEventData = {
@@ -199,6 +220,7 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
       signal: 'reaction_negative',
       reward: -0.7,
       source: 'reaction',
+      attribution: 'reaction',
       detail: '👎',
     };
     await store.append({ kind: 'social_outcome', subjectId: 'user-1', data: positiveOutcome });
@@ -208,6 +230,7 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
       kind: 'prediction_resolution',
       subjectId: 'user-1',
       data: {
+        resolutionRule: 'match_or_signal_v2',
         predictionId: 'prediction-1',
         responseMessageId: 'response-1',
         predictedSignal: 'positive_feedback',
@@ -276,6 +299,10 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
     await reloadedPrivacy.resume('privacy-user-1', 'owner', 'replay');
     assert.equal(await reloadedPrivacy.isOptedOut('privacy-user-1'), false);
     checks.privacyPersistence = true;
+    const brokenPrivacy = new FileMemoryPrivacyStore(tempRoot);
+    await assert.rejects(() => brokenPrivacy.isOptedOut('privacy-user-1'));
+    await assert.rejects(() => brokenPrivacy.isOptedOut('privacy-user-1'));
+    checks.privacyLoadFailsClosed = true;
 
     assert.equal(meetsSelfDeltaThreshold(['a', 'b', 'c'], ['cycle-1'], 3, 2), false);
     assert.equal(meetsSelfDeltaThreshold(['a', 'b'], ['cycle-1', 'cycle-2'], 3, 2), false);
@@ -302,6 +329,22 @@ export async function runDevelopmentReplay(): Promise<DevelopmentReplayReport> {
     assert.equal(concurrentAppend.dedupeKey, 'concurrent-load-fixture');
     assert.equal((await concurrentlyLoaded.list()).filter((event) => event.dedupeKey === 'concurrent-load-fixture').length, 1);
     checks.concurrentEventLoad = true;
+    const dedupeStore = new DevelopmentEventStore(path.join(tempRoot, 'dedupe-events.jsonl'));
+    const dedupeResults = await Promise.all([
+      dedupeStore.appendWithStatus({
+        kind: 'shadow_memory_result',
+        dedupeKey: 'atomic-dedupe-fixture',
+        data: { provider: 'fixture', operation: 'retrieve', latencyMs: 1, accepted: true, itemIds: [], detail: 'one' },
+      }),
+      dedupeStore.appendWithStatus({
+        kind: 'shadow_memory_result',
+        dedupeKey: 'atomic-dedupe-fixture',
+        data: { provider: 'fixture', operation: 'retrieve', latencyMs: 1, accepted: true, itemIds: [], detail: 'two' },
+      }),
+    ]);
+    assert.equal(dedupeResults.filter((result) => result.created).length, 1);
+    assert.equal((await dedupeStore.list()).length, 1);
+    checks.atomicEventDedupe = true;
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }

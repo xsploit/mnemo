@@ -57,10 +57,13 @@ export class FileMemoryPrivacyStore {
   private async load(): Promise<void> {
     if (this.loaded) return;
     if (!this.loadPromise) {
-      this.loadPromise = this.loadFromDisk().finally(() => {
-        this.loaded = true;
-        this.loadPromise = null;
-      });
+      this.loadPromise = this.loadFromDisk()
+        .then(() => {
+          this.loaded = true;
+        })
+        .finally(() => {
+          this.loadPromise = null;
+        });
     }
     await this.loadPromise;
   }

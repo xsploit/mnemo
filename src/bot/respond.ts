@@ -32,6 +32,7 @@ const VECTOR_MEMORY_LIMIT = 12;
 const RECENT_CONTINUITY_LIMIT = 8;
 const TEMPORAL_CONTINUITY_LIMIT = 16;
 const TOTAL_MEMORY_LIMIT = 24;
+const SHADOW_CANDIDATE_LIMIT = 48;
 const RECENT_CONTINUITY_HOURS = 48;
 const MAX_MEMORY_LINE_CHARS = 900;
 const TEMPORAL_RECALL_RE = /\b(last night|yesterday|earlier|this morning|today|tonight|last time|remember when|we talked|talked about|did we talk)\b/i;
@@ -98,17 +99,19 @@ async function retrieveConversationMemories(args: {
     cutoff,
   });
 
-  const ranked = await rerankMemoriesWithUtility(
-    mergeScoredMemories([...vectorHits, ...recentContinuity], TOTAL_MEMORY_LIMIT),
+  const candidates = mergeScoredMemories([...vectorHits, ...recentContinuity], SHADOW_CANDIDATE_LIMIT);
+  const ranked = (await rerankMemoriesWithUtility(
+    candidates,
     'global',
     args.subjectId,
-  );
+  )).slice(0, TOTAL_MEMORY_LIMIT);
   void observeShadowRetrieval({
     requestId: args.requestId,
     subjectId: args.subjectId,
     channelId: args.channelId,
     query: args.queryText,
-    candidates: ranked.map((memory) => ({
+    liveIds: ranked.slice(0, config.development.shadowRetrievalLimit).map((memory) => memory.id),
+    candidates: candidates.map((memory) => ({
       id: memory.id,
       kind: memory.kind,
       content: memory.content,
