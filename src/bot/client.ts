@@ -25,6 +25,7 @@ import { buildDiscordVoiceClip, fishTtsConfigured, sendDiscordVoiceMessage } fro
 import { buildTaggedFishSpeechText } from '../voice/fishSpeechTags.js';
 import { appendTurnTrace } from './turnTrace.js';
 import { linkDiscordResponse, observeFollowupMessage, observeReaction } from '../development/outcomes.js';
+import { discordMessageTimeContext } from '../timeContext.js';
 
 const log = logger('bot');
 
@@ -55,7 +56,7 @@ function keepTyping(channel: unknown, maxMs = 3 * 60_000): () => void {
 
 /** One pending batch of rapid-fire messages from a single author in a channel. */
 interface Batch {
-  messages: string[];
+  messages: Array<{ content: string; timestamp: string; messageId: string }>;
   last: Message;
   kind: MsgKind;
   timer: NodeJS.Timeout;
@@ -157,12 +158,13 @@ export function createClient(): Client {
     // Letta-style batching: coalesce a burst of messages into one turn.
     const key = `${msg.channelId}:${msg.author.id}`;
     const existing = batches.get(key);
+    const batchedMessage = { content: turnText, timestamp: msg.createdAt.toISOString(), messageId: msg.id };
     if (existing) {
       clearTimeout(existing.timer);
-      existing.messages.push(turnText);
+      existing.messages.push(batchedMessage);
       existing.last = msg;
     }
-    const batch: Batch = existing ?? { messages: [turnText], last: msg, kind, timer: null as any };
+    const batch: Batch = existing ?? { messages: [batchedMessage], last: msg, kind, timer: null as any };
     batch.timer = setTimeout(() => {
       batches.delete(key);
       void flushBatch(client, batch);
@@ -274,7 +276,7 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
     await msg.reply({ content: formatShitlistReply(shitlistEntry), allowedMentions: { repliedUser: false } });
     return;
   }
-  const message = batch.messages.join('\n');
+  const message = renderBatchMessages(batch.messages);
   const stopTyping = keepTyping(msg.channel);
   try {
     const history = await fetchHistory(msg.channel, config.bot.historyN, msg.id);
@@ -286,6 +288,7 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
       userName: (msg.member?.displayName ?? msg.author.displayName) || msg.author.username,
       userTag: msg.author.username,
       message,
+      messageTimestamp: msg.createdAt.toISOString(),
       history,
       kind: batch.kind,
       toolScope: {
@@ -367,6 +370,19 @@ async function flushBatch(client: Client, batch: Batch): Promise<void> {
   } finally {
     stopTyping(); // safety: never leave the indicator looping after a failure
   }
+}
+
+function renderBatchMessages(messages: Batch['messages'], now = new Date()): string {
+  if (messages.length === 1) return messages[0]!.content;
+  return messages
+    .map((item, index) => {
+      const time = discordMessageTimeContext(item.timestamp, now);
+      return [
+        `[batched_message index=${index + 1} message_id=${item.messageId} sent_at_utc=${time.sentAtUtc} sent_at_pdt=${JSON.stringify(time.sentAtPdt)} age_at_prompt_seconds=${time.ageSeconds} age_at_prompt=${JSON.stringify(time.ageHuman)}]`,
+        item.content,
+      ].join('\n');
+    })
+    .join('\n');
 }
 
 export async function startBot(): Promise<Client> {

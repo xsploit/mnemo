@@ -86,6 +86,7 @@ export interface CompileCognitiveStateArgs {
   messageId: string;
   userName: string;
   message: string;
+  messageTimestamp?: string;
   history: HistoryTurn[];
   memories: ScoredMemory[];
   affinity: AffinityView | null;
@@ -122,12 +123,14 @@ export async function compileCognitiveState(args: CompileCognitiveStateArgs): Pr
         evidenceId: currentEvidenceId,
         user: args.userName,
         message: clamp(args.message, 5000),
+        timestamp: args.messageTimestamp ?? new Date().toISOString(),
       },
       recentHistory: args.history.slice(-10).map((turn, index) => ({
         evidenceId: turn.messageId ? `discord-message:${turn.messageId}` : `ephemeral-history:${index}`,
         author: turn.author,
         bot: turn.bot ?? false,
         self: turn.self ?? false,
+        timestamp: turn.timestamp ?? null,
         content: clamp(turn.content, 700),
       })),
       memories: args.memories.slice(0, 16).map((memory) => ({

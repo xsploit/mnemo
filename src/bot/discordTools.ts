@@ -12,7 +12,7 @@ import {
 } from 'discord.js';
 import { z } from 'zod';
 import { config } from '../config.js';
-import { pacificTimeSnapshot } from '../timeContext.js';
+import { discordMessageTimeContext, pacificTimeSnapshot } from '../timeContext.js';
 import {
   createOwnerGuildInvite,
   deliverOwnerInvite,
@@ -979,9 +979,14 @@ function serializeChannel(channel: unknown): Record<string, unknown> | null {
 }
 
 function serializeMessage(message: Message): Record<string, unknown> {
+  const time = discordMessageTimeContext(message.createdAt);
   return {
     id: message.id,
-    timestamp: message.createdAt.toISOString(),
+    timestamp: time.sentAtUtc,
+    sentAtUtc: time.sentAtUtc,
+    sentAtPdt: time.sentAtPdt,
+    ageSeconds: time.ageSeconds,
+    age: time.ageHuman,
     author: serializeUser(message.author),
     authorIsBot: message.author.bot,
     content: clampString(message.cleanContent || message.content, 1200),

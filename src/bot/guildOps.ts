@@ -6,6 +6,7 @@ import {
   type GuildMember,
   type Message,
 } from 'discord.js';
+import { discordMessageTimeContext } from '../timeContext.js';
 
 export interface OwnerInviteOptions {
   channelId?: string;
@@ -193,9 +194,13 @@ function serializeChannelAccess(channel: GuildBasedChannel, botMember: GuildMemb
 }
 
 function serializeMessage(message: Message): Record<string, unknown> {
+  const time = discordMessageTimeContext(message.createdAt);
   return {
     id: message.id,
-    timestamp: message.createdAt.toISOString(),
+    timestamp: time.sentAtUtc,
+    sentAtPdt: time.sentAtPdt,
+    ageSeconds: time.ageSeconds,
+    age: time.ageHuman,
     author: {
       id: message.author.id,
       username: message.author.username,
