@@ -8,3 +8,7 @@ data/
 *.log
 .DS_Store
 .squad/
+.lean-ctx/
+locks/
+.tmp/
+logs/
