@@ -718,7 +718,8 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
         limit: 8,
         validOnly: true,
       });
-      await i.editReply(
+      await editLongReply(
+        i,
         mems.length
           ? `Here's what surfaces about **${about}**:\n` +
               mems
@@ -743,7 +744,8 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
       );
       // recent() returns ascending by time; take the most recent entry.
       const latest = dreams[dreams.length - 1];
-      await i.editReply(
+      await editLongReply(
+        i,
         latest
           ? `*From ${NAME}'s diary:*\n> ${extractPersonaMessage(latest.content)}`
           : "I haven't dreamed about you yet. Try `/dream`.",
@@ -1348,7 +1350,7 @@ export async function handleCommand(i: ChatInputCommandInteraction): Promise<voi
       await i.deferReply({ ephemeral: true });
       const view = i.options.getString('view') ?? 'status';
       const text = await renderDevelopmentView(i.user.id, view);
-      await i.editReply(text.slice(0, 1900));
+      await editLongReply(i, text);
       return;
     }
 

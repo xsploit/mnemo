@@ -226,6 +226,14 @@ export const config = {
     minUtteranceMs: num('VC_MIN_UTTERANCE_MS', 600),
     /** Hard cap per utterance so a monologue can't run away (ms). */
     maxUtteranceMs: num('VC_MAX_UTTERANCE_MS', 45_000),
+    /** Real Silero VAD (ONNX model, not a heuristic) gate BEFORE transcription —
+     *  Discord's own "speaking" signal isn't real speech detection, so silence/
+     *  noise reaching the ASR is exactly what makes it hallucinate ("thanks for
+     *  watching", laughs). Per-frame speech-probability threshold (0-1). */
+    vadProbThreshold: num('VC_VAD_PROB_THRESHOLD', 0.5),
+    /** Fraction of 32ms frames that must clear the probability threshold across
+     *  the whole utterance — filters a single blip from sustained speech. */
+    vadMinActiveRatio: num('VC_VAD_MIN_ACTIVE_RATIO', 0.15),
     /** Mirror transcripts + her replies into the linked text channel. */
     textMirror: bool('VC_TEXT_MIRROR', true),
   },

@@ -201,9 +201,29 @@ async function runVoiceTurn(
   }
 }
 
-/** The media model describes non-speech audio ("a short beep") — don't chat with noises. */
+// Whisper-family ASR models are well documented to hallucinate these exact
+// stock phrases when fed silence, room tone, or non-speech noise — they were
+// trained on YouTube-style captions and have to output *something*. This is
+// the second line of defense after the local VAD gate in vc.ts (which should
+// catch most of this before it ever reaches transcription).
+const HALLUCINATION_PHRASES =
+  /(thanks? (for watching|you)|please (subscribe|like)|like and subscribe|subscribe to my channel|don'?t forget to subscribe|see you (next time|in the next video)|amara\.org|transcribed by|captions? by|subtitles? by|www\.\S+\.(com|org)|\[?\(?(music|applause|laughter|silence|no speech|noise|static|beep|inaudible)\)?\]?)/i;
+
+/** The media model describes non-speech audio, or the ASR hallucinated boilerplate over silence/noise. */
 function isNonSpeech(transcript: string): boolean {
-  return /^\(?\[?(silence|no speech|music|noise|static|beep|inaudible)/i.test(transcript);
+  const trimmed = transcript.trim();
+  if (/^\(?\[?(silence|no speech|music|noise|static|beep|inaudible)/i.test(trimmed)) return true;
+  if (HALLUCINATION_PHRASES.test(trimmed)) return true;
+  if (isDegenerateRepetition(trimmed)) return true;
+  return false;
+}
+
+/** Catches decode-loop artifacts like "the the the the the" — real speech doesn't do this. */
+function isDegenerateRepetition(transcript: string): boolean {
+  const words = transcript.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length < 5) return false;
+  const uniqueWords = new Set(words);
+  return uniqueWords.size / words.length < 0.3; // <30% unique = repetition loop
 }
 
 /**

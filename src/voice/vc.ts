@@ -15,6 +15,7 @@ import prism from 'prism-media';
 import type { VoiceBasedChannel } from 'discord.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { detectSpeech } from './vad.js';
 
 const log = logger('vc');
 
@@ -209,11 +210,31 @@ function wireReceiver(state: GuildVoice, channel: VoiceBasedChannel, onUtterance
       else opusStream.destroy(); // cap runaway monologues
     });
 
-    const finish = () => {
+    const finish = async () => {
       state.capturing.delete(userId);
       const pcm = Buffer.concat(pcmChunks);
       const durationMs = Math.round((pcm.length / 2 / CHANNELS / SAMPLE_RATE) * 1000);
       if (durationMs < config.vc.minUtteranceMs) return; // cough/keyclick noise
+
+      // Real gate (Silero VAD, an actual trained model — not a loudness
+      // heuristic): Discord's "speaking" flag just means SOME mic input was
+      // detected, not that it was actual speech. Check this on the decoded PCM
+      // before it ever reaches transcription — this is what stops the ASR from
+      // hallucinating stock phrases over silence/room-tone/noise.
+      let vad;
+      try {
+        vad = await detectSpeech(pcm, SAMPLE_RATE, CHANNELS);
+      } catch (e: any) {
+        log.warn(`VAD check failed for ${userId}, passing utterance through`, e?.message ?? e);
+        vad = { speech: true, avgProb: -1, maxProb: -1, activeRatio: -1 };
+      }
+      if (!vad.speech) {
+        log.debug(
+          `dropped ${durationMs}ms capture from ${userId}: no speech detected (avgProb=${vad.avgProb.toFixed(3)} maxProb=${vad.maxProb.toFixed(3)} activeRatio=${vad.activeRatio.toFixed(2)})`,
+        );
+        return;
+      }
+
       onUtterance({
         guildId: channel.guild.id,
         voiceChannelId: channel.id,

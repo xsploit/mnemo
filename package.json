@@ -37,6 +37,7 @@
     "dotenv": "^16.4.7",
     "fish-audio-sdk": "^2025.11.29",
     "libsodium-wrappers": "^0.8.4",
+    "onnxruntime-node": "^1.27.0",
     "opusscript": "^0.0.8",
     "pdf-parse": "^2.4.5",
     "pg": "^8.13.1",

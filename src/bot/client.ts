@@ -144,7 +144,11 @@ export function createClient(): Client {
     }
 
     const kind: MsgKind = isDM ? 'dm' : isReplyToBot ? 'reply' : 'mention';
-    const content = msg.content.replace(`<@${client.user.id}>`, '').trim();
+    // Global + both mention forms (<@id> and the legacy nickname form <@!id>):
+    // a plain string .replace() only strips the FIRST occurrence, so double-
+    // tagging her left a leftover raw mention token in what she "heard."
+    const mentionPattern = new RegExp(`<@!?${client.user.id}>`, 'g');
+    const content = msg.content.replace(mentionPattern, '').replace(/\s+/g, ' ').trim();
     const attachmentContext = await readDiscordTextAttachmentContext(msg).catch((e: any) => {
       log.warn('Discord attachment context skipped', e?.message ?? e);
       return { text: '', includedIds: [], skipped: [] };
